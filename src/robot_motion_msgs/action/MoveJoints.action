@@ -4,13 +4,13 @@ string[] joint_names
 float64[] target_positions
 float64 speed_scale
 float64 timeout_sec
-
+---
 # Result
 bool success
 string task_id
 string message
 float64 final_error
-
+---
 # Feedback
 string task_id
 string current_state

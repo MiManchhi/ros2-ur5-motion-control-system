@@ -1,2 +1,4 @@
+bool force_reset
+---
 bool success
 string message
