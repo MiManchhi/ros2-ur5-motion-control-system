@@ -9,55 +9,97 @@
 #include "rclcpp_action/rclcpp_action.hpp"
 
 #include "robot_motion_msgs/action/move_joints.hpp"
+#include "robot_motion_msgs/msg/motion_command.hpp"
 #include "robot_motion_msgs/msg/system_state.hpp"
 
-// MotionApiNode 继承自 rclcpp::Node，表示它是一个 ROS2 节点
 class MotionApiNode : public rclcpp::Node
 {
 public:
-    using MoveJoints = robot_motion_msgs::action::MoveJoints;
-    using GoalHandleMoveJoints = rclcpp_action::ServerGoalHandle<MoveJoints>;
+  using MoveJoints = robot_motion_msgs::action::MoveJoints;
+  using GoalHandleMoveJoints = rclcpp_action::ServerGoalHandle<MoveJoints>;
 
-    // NodeOptions ROS2 节点常见写法，方便以后扩展 命名空间 参数重映射 组件化加载
-    explicit MotionApiNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
-
-  private:
-    // 收到 Goal 请求时调用：决定接受还是拒绝
-    rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const MoveJoints::Goal> goal);
-
-    // 收到取消请求时调用：决定是否允许取消
-    rclcpp_action::CancelResponse handle_cancel(const std::shared_ptr<GoalHandleMoveJoints> goal_handle);
-
-    // Goal 被接受后调用：通常在这里启动异步执行
-    void handle_accepted(const std::shared_ptr<GoalHandleMoveJoints> goal_handle);
-
-    // 真正执行动作逻辑的函数
-    void execute(const std::shared_ptr<GoalHandleMoveJoints> goal_handle);
-
-    // 校验客户端发来的 goal 是否合法
-    bool validate_goal(const std::shared_ptr<const MoveJoints::Goal> & goal, std::string & reason) const;
-
-    // 生成任务 ID
-    std::string generate_task_id();
-
-    // 发布系统状态到 topic
-    void publish_system_state(const std::string & task_id, const std::string & state, const std::string & message, bool is_error);
+  // 构造函数，支持 ROS2 标准 NodeOptions
+  explicit MotionApiNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
-    // ===== 配置参数 =====
-    std::string action_name_;              // action 名称
-    std::string system_state_topic_;       // 状态 topic 名称
-    double default_timeout_sec_;           // 默认超时时间
-    double feedback_period_sec_;           // 反馈周期
-    double min_speed_scale_;               // 最小速度比例
-    double max_speed_scale_;               // 最大速度比例
-    int expected_joint_count_;             // 期望的关节数量
+  // Action 目标到达时的处理函数：
+  // 这里只做“是否接收该任务”的判定，不做耗时逻辑
+  rclcpp_action::GoalResponse handle_goal(
+    const rclcpp_action::GoalUUID & uuid,
+    std::shared_ptr<const MoveJoints::Goal> goal);
 
-  std::atomic<uint64_t> task_counter_;     // 原子计数器：用于生成 task_id，保证多线程安全
+  // Action 取消请求处理函数
+  rclcpp_action::CancelResponse handle_cancel(
+    const std::shared_ptr<GoalHandleMoveJoints> goal_handle);
 
-  // 状态消息发布器
+  // Action 目标被接受后，会在独立线程中执行 execute
+  void handle_accepted(const std::shared_ptr<GoalHandleMoveJoints> goal_handle);
+
+  // Action 真正执行逻辑：
+  // 阶段 2 中，这里负责：
+  // 1. 生成 task_id
+  // 2. 发布 MotionCommand 给 planner
+  // 3. 发布 system_state
+  // 4. 返回简化结果
+  void execute(const std::shared_ptr<GoalHandleMoveJoints> goal_handle);
+
+  // 校验目标是否合法
+  bool validate_goal(
+    const std::shared_ptr<const MoveJoints::Goal> & goal,
+    std::string & reason) const;
+
+  // 生成系统内部唯一任务 ID
+  std::string generate_task_id();
+
+  // 发布系统状态消息
+  void publish_system_state(
+    const std::string & task_id,
+    const std::string & state,
+    const std::string & message,
+    bool is_error);
+
+  // 发布内部运动命令给 planner
+  void publish_motion_command(
+    const std::string & task_id,
+    const std::shared_ptr<const MoveJoints::Goal> & goal);
+
+private:
+  // ===== 参数 =====
+
+  // 对外 action 名称，例如 /move_joints
+  std::string action_name_;
+
+  // 系统状态 topic，例如 /system_state
+  std::string system_state_topic_;
+
+  // 向规划器发送命令的 topic，例如 /motion_command
+  std::string motion_command_topic_;
+
+  // 默认超时时间
+  double default_timeout_sec_;
+
+  // feedback 发布周期
+  double feedback_period_sec_;
+
+  // 速度缩放最小/最大值
+  double min_speed_scale_;
+  double max_speed_scale_;
+
+  // 预期关节数，例如 UR5 为 6
+  int expected_joint_count_;
+
+  // 任务计数器，用于辅助生成唯一 task_id
+  std::atomic<uint64_t> task_counter_;
+
+  // ===== 发布器 / Action Server =====
+
+  // 系统状态发布器
   rclcpp::Publisher<robot_motion_msgs::msg::SystemState>::SharedPtr system_state_pub_;
-  // Action 服务器
+
+  // 内部运动命令发布器
+  rclcpp::Publisher<robot_motion_msgs::msg::MotionCommand>::SharedPtr motion_command_pub_;
+
+  // 对外动作服务器
   rclcpp_action::Server<MoveJoints>::SharedPtr action_server_;
 };
 

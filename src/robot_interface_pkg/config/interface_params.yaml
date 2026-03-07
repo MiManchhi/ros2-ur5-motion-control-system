@@ -1,0 +1,4 @@
+robot_interface_node:
+  ros__parameters:
+    joint_cmd_topic: "/joint_cmd"
+    sim_command_topic: "/joint_trajectory_controller/joint_trajectory"

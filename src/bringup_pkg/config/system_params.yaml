@@ -1,0 +1,4 @@
+/**:
+  ros__parameters:
+    stage_name: "stage2_architecture"
+    system_name: "ros2_ur5_motion_control_system"

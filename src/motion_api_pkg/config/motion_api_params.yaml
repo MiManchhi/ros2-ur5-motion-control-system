@@ -2,6 +2,7 @@ motion_api_node:
   ros__parameters:
     action_name: "/move_joints"
     system_state_topic: "/system_state"
+    motion_command_topic: "/motion_command"
     default_timeout_sec: 10.0
     feedback_period_sec: 0.5
     min_speed_scale: 0.1

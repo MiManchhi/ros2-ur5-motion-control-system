@@ -1,0 +1,6 @@
+planner_node:
+  ros__parameters:
+    input_topic: "/motion_command"
+    output_topic: "/planned_traj"
+    default_duration_sec: 3.0
+    interpolation_points: 10

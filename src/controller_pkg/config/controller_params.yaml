@@ -1,0 +1,4 @@
+controller_node:
+  ros__parameters:
+    planned_traj_topic: "/planned_traj"
+    joint_cmd_topic: "/joint_cmd"

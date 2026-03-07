@@ -9,6 +9,15 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <exec_depend>motion_api_pkg</exec_depend>
+  <exec_depend>planner_pkg</exec_depend>
+  <exec_depend>controller_pkg</exec_depend>
+  <exec_depend>robot_interface_pkg</exec_depend>
+  <exec_depend>system_manager_pkg</exec_depend>
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 

@@ -14,6 +14,7 @@
   <depend>sensor_msgs</depend>
   <depend>builtin_interfaces</depend>
   <depend>robot_motion_msgs</depend>
+  <depend>robot_common_pkg</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

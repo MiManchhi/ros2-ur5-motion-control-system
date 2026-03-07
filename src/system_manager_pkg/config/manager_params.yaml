@@ -1,0 +1,5 @@
+system_manager_node:
+  ros__parameters:
+    system_state_topic: "/system_state"
+    motion_event_topic: "/motion_event"
+    reset_service_name: "/reset_system"
