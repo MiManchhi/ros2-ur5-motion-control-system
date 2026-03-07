@@ -1,0 +1,9 @@
+motion_api_node:
+  ros__parameters:
+    action_name: "/move_joints"
+    system_state_topic: "/system_state"
+    default_timeout_sec: 10.0
+    feedback_period_sec: 0.5
+    min_speed_scale: 0.1
+    max_speed_scale: 1.0
+    expected_joint_count: 6

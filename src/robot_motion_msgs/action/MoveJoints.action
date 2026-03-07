@@ -1,18 +1,36 @@
-# Goal
+# 让机器人执行一次关节空间运动任务
+# ===== Goal：目标请求 =====
+# 任务名称，用于人类可读标识，如 "move_to_home"、"pick_pose_1"
 string task_name
+# 目标关节名称列表，顺序应与 target_positions 一一对应
 string[] joint_names
+# 目标关节角度/位置，单位通常为 rad
 float64[] target_positions
+# 速度缩放系数，范围通常建议 0.0 ~ 1.0
+# 例如 0.5 表示按默认速度的 50% 执行
 float64 speed_scale
+# 超时时间，单位秒
+# 超过该时间仍未完成，则任务可判定为失败
 float64 timeout_sec
+
 ---
-# Result
+# ===== Result：最终结果 =====
+# 任务是否成功完成
 bool success
+# 系统生成的任务唯一标识，用于跨模块追踪
 string task_id
+# 结果说明文字，如 "motion completed" 或 "timeout"
 string message
+# 最终误差，通常表示目标位置与实际位置之间的最大误差
 float64 final_error
+
 ---
-# Feedback
+# ===== Feedback：执行过程反馈 =====
+# 当前任务唯一标识
 string task_id
+# 当前执行状态，如 "planning"、"executing"、"completed"
 string current_state
+# 当前进度，建议范围 0.0 ~ 1.0
 float64 progress
+# 当前误差，表示此刻距离目标的误差
 float64 current_error

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(motion_api_pkg)
+project(robot_common_pkg)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,14 +11,9 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
-find_package(rclcpp REQUIRED)
-find_package(rclcpp_action REQUIRED)
-find_package(std_msgs REQUIRED)
-find_package(sensor_msgs REQUIRED)
-find_package(trajectory_msgs REQUIRED)
-find_package(builtin_interfaces REQUIRED)
-find_package(robot_motion_msgs REQUIRED)
-find_package(robot_common_pkg REQUIRED)
+# uncomment the following section in order to fill in
+# further dependencies manually.
+# find_package(<dependency> REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -32,38 +27,11 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-add_executable(motion_api_node
-  src/motion_api_node.cpp
-)
-
-target_include_directories(motion_api_node PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
-)
-
-ament_target_dependencies(motion_api_node
-  rclcpp
-  rclcpp_action
-  std_msgs
-  builtin_interfaces
-  robot_motion_msgs
-  robot_common_pkg
-)
-
-install(TARGETS
-  motion_api_node
-  DESTINATION lib/${PROJECT_NAME}
-)
-
 install(DIRECTORY
   include/
   DESTINATION include/
 )
 
-install(DIRECTORY
-  launch
-  config
-  DESTINATION share/${PROJECT_NAME}
-)
+ament_export_include_directories(include)
 
 ament_package()

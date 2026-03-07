@@ -1,4 +1,6 @@
+# Request: 是否强制复位
 bool force_reset
 ---
+# Response: 复位结果
 bool success
 string message
