@@ -2,10 +2,14 @@
 
 #include <chrono>
 
+#include "robot_common_pkg/constants.hpp"
+
 using namespace std::chrono_literals;
 
 namespace system_manager_pkg
 {
+
+namespace c = robot_common_pkg::constants;
 
 SystemManagerNode::SystemManagerNode(const rclcpp::NodeOptions & options)
 : Node("system_manager_node", options)
@@ -15,9 +19,11 @@ SystemManagerNode::SystemManagerNode(const rclcpp::NodeOptions & options)
   // =========================
   this->declare_parameter<double>("task_timeout_sec", 20.0);
   this->declare_parameter<double>("watchdog_rate_hz", 2.0);
+  this->declare_parameter<bool>("auto_reset_on_failure", true);
 
   this->get_parameter("task_timeout_sec", task_timeout_sec_);
   this->get_parameter("watchdog_rate_hz", watchdog_rate_hz_);
+  this->get_parameter("auto_reset_on_failure", auto_reset_on_failure_);
 
   if (task_timeout_sec_ <= 0.0) {
     task_timeout_sec_ = 20.0;
@@ -28,25 +34,24 @@ SystemManagerNode::SystemManagerNode(const rclcpp::NodeOptions & options)
   }
 
   // =========================
-  // 创建订阅器
+  // 创建订阅、发布、服务、定时器
   // =========================
-  system_state_raw_sub_ =
-    this->create_subscription<robot_motion_msgs::msg::SystemState>(
-      "/system_state_raw",
+  motion_event_sub_ =
+    this->create_subscription<robot_motion_msgs::msg::MotionEvent>(
+      "/motion_event",
       50,
-      std::bind(&SystemManagerNode::on_system_state_raw, this, std::placeholders::_1));
+      std::bind(&SystemManagerNode::on_motion_event, this, std::placeholders::_1));
 
-  // =========================
-  // 创建发布器
-  // =========================
+  task_state_pub_ =
+    this->create_publisher<robot_motion_msgs::msg::TaskState>(
+      "/task_state",
+      50);
+
   system_state_pub_ =
     this->create_publisher<robot_motion_msgs::msg::SystemState>(
       "/system_state",
       50);
 
-  // =========================
-  // 创建服务
-  // =========================
   reset_service_ =
     this->create_service<robot_motion_msgs::srv::ResetSystem>(
       "/reset_system",
@@ -56,28 +61,26 @@ SystemManagerNode::SystemManagerNode(const rclcpp::NodeOptions & options)
         std::placeholders::_1,
         std::placeholders::_2));
 
-  // =========================
-  // 创建监控定时器
-  // =========================
   const auto period = std::chrono::duration<double>(1.0 / watchdog_rate_hz_);
   watchdog_timer_ = this->create_wall_timer(
     std::chrono::duration_cast<std::chrono::milliseconds>(period),
     std::bind(&SystemManagerNode::on_watchdog_timer, this));
 
-  init_state_machine();
+  init_system_state();
 
   RCLCPP_INFO(this->get_logger(), "system_manager_node 已启动");
   RCLCPP_INFO(
     this->get_logger(),
-    "参数：task_timeout_sec=%.2f, watchdog_rate_hz=%.2f",
+    "参数：task_timeout_sec=%.2f, watchdog_rate_hz=%.2f, auto_reset_on_failure=%s",
     task_timeout_sec_,
-    watchdog_rate_hz_);
+    watchdog_rate_hz_,
+    auto_reset_on_failure_ ? "true" : "false");
 }
 
-void SystemManagerNode::on_system_state_raw(
-  const robot_motion_msgs::msg::SystemState::SharedPtr msg)
+void SystemManagerNode::on_motion_event(
+  const robot_motion_msgs::msg::MotionEvent::SharedPtr msg)
 {
-  handle_raw_state(*msg);
+  handle_motion_event(*msg);
 }
 
 void SystemManagerNode::on_reset_system(
@@ -88,10 +91,34 @@ void SystemManagerNode::on_reset_system(
 
   RCLCPP_WARN(this->get_logger(), "收到 /reset_system 请求");
 
-  state_machine_.reset();
+  // 先广播系统正在重置
+  publish_system_state(
+    active_task_ctx_.active ? active_task_ctx_.task_id : "",
+    c::system_state::kResetting,
+    "系统正在重置",
+    false);
+
+  // 如果当前存在活动任务，需要先收口该任务
+  if (active_task_ctx_.active) {
+    publish_task_state(
+      active_task_ctx_.task_id,
+      c::task_state::kFailed,
+      c::module::kSystemManager,
+      "系统重置导致当前任务被终止",
+      active_task_ctx_.progress,
+      active_task_ctx_.current_error,
+      true,
+      true);
+  }
+
+  // 清空上下文并恢复系统状态
   reset_active_task_context();
 
-  publish_system_state("", "IDLE", "系统已重置并恢复到 IDLE", false);
+  publish_system_state(
+    "",
+    c::system_state::kIdle,
+    "系统已重置并恢复空闲",
+    false);
 
   response->success = true;
   response->message = "system reset success";
@@ -99,54 +126,105 @@ void SystemManagerNode::on_reset_system(
 
 void SystemManagerNode::on_watchdog_timer()
 {
+  // 当前无活动任务，则无需 watchdog
   if (!active_task_ctx_.active) {
     return;
   }
 
   const double elapsed = (this->now() - active_task_ctx_.start_time).seconds();
-  if (elapsed > task_timeout_sec_) {
-    RCLCPP_ERROR(
-      this->get_logger(),
-      "[task_id=%s] 任务整体超时",
-      active_task_ctx_.task_id.c_str());
+  if (elapsed <= task_timeout_sec_) {
+    return;
+  }
 
-    if (state_machine_.transition_to(StateMachine::State::ERROR)) {
-      publish_system_state(
-        active_task_ctx_.task_id,
-        "ERROR",
-        "任务整体超时",
-        true);
-    }
+  RCLCPP_ERROR(
+    this->get_logger(),
+    "[task_id=%s] 任务整体超时，elapsed=%.3f sec",
+    active_task_ctx_.task_id.c_str(),
+    elapsed);
 
-    finish_active_task();
+  // 任务整体超时，收敛为 failed
+  publish_task_state(
+    active_task_ctx_.task_id,
+    c::task_state::kFailed,
+    c::module::kSystemManager,
+    "任务整体超时",
+    active_task_ctx_.progress,
+    active_task_ctx_.current_error,
+    true,
+    true);
 
-    // ERROR 状态结束后恢复 IDLE
-    if (state_machine_.transition_to(StateMachine::State::IDLE)) {
-      publish_system_state("", "IDLE", "系统恢复空闲", false);
-    }
+  finish_active_task();
+
+  if (auto_reset_on_failure_) {
+    publish_system_state(
+      "",
+      c::system_state::kIdle,
+      "系统已从任务超时中恢复空闲",
+      false);
+  } else {
+    publish_system_state(
+      "",
+      c::system_state::kError,
+      "任务超时后系统进入 error 状态",
+      true);
   }
 }
 
-void SystemManagerNode::init_state_machine()
+void SystemManagerNode::init_system_state()
 {
-  // 状态机初始化后，从 INIT 切到 IDLE
-  if (state_machine_.transition_to(StateMachine::State::IDLE)) {
-    publish_system_state("", "IDLE", "系统初始化完成，进入空闲状态", false);
-  }
+  publish_system_state(
+    "",
+    c::system_state::kInit,
+    "系统初始化中",
+    false);
+
+  publish_system_state(
+    "",
+    c::system_state::kIdle,
+    "系统初始化完成，进入空闲",
+    false);
 }
 
 bool SystemManagerNode::can_accept_new_task() const
 {
-  return !active_task_ctx_.active &&
-         state_machine_.current_state() == StateMachine::State::IDLE;
+  return !active_task_ctx_.active;
 }
 
-void SystemManagerNode::start_new_task(const std::string & task_id)
+void SystemManagerNode::start_new_task(
+  const std::string & task_id,
+  const std::string & initial_state,
+  const std::string & source_module,
+  float progress,
+  double current_error)
 {
   active_task_ctx_.active = true;
   active_task_ctx_.task_id = task_id;
+  active_task_ctx_.state = initial_state;
+  active_task_ctx_.source_module = source_module;
   active_task_ctx_.start_time = this->now();
   active_task_ctx_.last_event_time = this->now();
+  active_task_ctx_.progress = progress;
+  active_task_ctx_.current_error = current_error;
+
+  TaskStateMachine::State init_state;
+  if (TaskStateMachine::from_string(initial_state, init_state)) {
+    task_state_machine_.reset(init_state);
+  } else {
+    task_state_machine_.reset(TaskStateMachine::State::ACCEPTED);
+  }
+}
+
+void SystemManagerNode::update_active_task(
+  const std::string & state,
+  const std::string & source_module,
+  float progress,
+  double current_error)
+{
+  active_task_ctx_.state = state;
+  active_task_ctx_.source_module = source_module;
+  active_task_ctx_.last_event_time = this->now();
+  active_task_ctx_.progress = progress;
+  active_task_ctx_.current_error = current_error;
 }
 
 void SystemManagerNode::finish_active_task()
@@ -158,126 +236,231 @@ void SystemManagerNode::reset_active_task_context()
 {
   active_task_ctx_.active = false;
   active_task_ctx_.task_id.clear();
+  active_task_ctx_.state.clear();
+  active_task_ctx_.source_module.clear();
   active_task_ctx_.start_time = this->now();
   active_task_ctx_.last_event_time = this->now();
+  active_task_ctx_.progress = 0.0F;
+  active_task_ctx_.current_error = 0.0;
+
+  task_state_machine_.reset(TaskStateMachine::State::ACCEPTED);
 }
 
-void SystemManagerNode::handle_raw_state(
-  const robot_motion_msgs::msg::SystemState & raw_msg)
+void SystemManagerNode::handle_motion_event(
+  const robot_motion_msgs::msg::MotionEvent & event_msg)
 {
-  const std::string & task_id = raw_msg.task_id;
-  const std::string & state_str = raw_msg.state;
+  const std::string & task_id = event_msg.task_id;
+  const std::string & module_name = event_msg.module_name;
+  const std::string & event_name = event_msg.event_name;
 
   RCLCPP_INFO(
     this->get_logger(),
-    "[raw] task_id=%s, state=%s, message=%s, is_error=%s",
+    "[event] task_id=%s, module=%s, event=%s, related_state=%s, detail=%s, is_error=%s",
     task_id.c_str(),
-    state_str.c_str(),
-    raw_msg.message.c_str(),
-    raw_msg.is_error ? "true" : "false");
+    module_name.c_str(),
+    event_name.c_str(),
+    event_msg.related_state.c_str(),
+    event_msg.detail.c_str(),
+    event_msg.is_error ? "true" : "false");
 
-  StateMachine::State target_state;
-  if (!StateMachine::from_string(state_str, target_state)) {
+  // 系统级 reset 事件，可不依赖 task_id
+  if (event_name == c::event::kSystemReset) {
+    publish_system_state(
+      "",
+      c::system_state::kResetting,
+      event_msg.detail.empty() ? "收到系统重置事件" : event_msg.detail,
+      false);
+    return;
+  }
+
+  // 非 reset 事件必须有 task_id
+  if (task_id.empty()) {
+    RCLCPP_WARN(this->get_logger(), "收到无 task_id 的任务事件，忽略");
+    return;
+  }
+
+  const std::string target_state = resolve_target_task_state(event_msg);
+  if (target_state.empty()) {
     RCLCPP_WARN(
       this->get_logger(),
-      "[task_id=%s] 未知状态字符串：%s",
+      "[task_id=%s] 无法根据事件推导目标状态：event=%s",
       task_id.c_str(),
-      state_str.c_str());
+      event_name.c_str());
+    return;
+  }
+
+  TaskStateMachine::State new_state;
+  if (!TaskStateMachine::from_string(target_state, new_state)) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[task_id=%s] 目标状态字符串无法识别：%s",
+      task_id.c_str(),
+      target_state.c_str());
     return;
   }
 
   // =========================
-  // 处理新任务开始
-  // 当系统处于 IDLE 且收到 PLANNING 时，认为新任务开始
+  // 新任务启动逻辑
+  // accepted 是正式任务进入 manager 管理的入口
   // =========================
-  if (target_state == StateMachine::State::PLANNING &&
-      state_machine_.current_state() == StateMachine::State::IDLE) {
-    if (!can_accept_new_task()) {
-      publish_system_state(task_id, "ERROR", "系统忙碌，无法接受新任务", true);
-      return;
-    }
-
-    start_new_task(task_id);
-
-    if (!state_machine_.transition_to(StateMachine::State::PLANNING)) {
-      publish_system_state(task_id, "ERROR", "状态切换到 PLANNING 失败", true);
-      finish_active_task();
-      return;
-    }
-
-    publish_system_state(task_id, "PLANNING", raw_msg.message, false);
-    return;
-  }
-
-  // 当前没有活动任务时，忽略除 PLANNING 外的事件
   if (!active_task_ctx_.active) {
-    RCLCPP_WARN(
-      this->get_logger(),
-      "[task_id=%s] 当前无活动任务，忽略状态：%s",
-      task_id.c_str(),
-      state_str.c_str());
+    if (new_state != TaskStateMachine::State::ACCEPTED) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "[task_id=%s] 当前无活动任务，只接受 accepted 作为新任务起点，忽略 state=%s",
+        task_id.c_str(),
+        target_state.c_str());
+      return;
+    }
+
+    if (!can_accept_new_task()) {
+      publish_system_state(
+        task_id,
+        c::system_state::kError,
+        "系统忙碌，无法接受新任务",
+        true);
+      return;
+    }
+
+    start_new_task(
+      task_id,
+      target_state,
+      module_name,
+      event_msg.progress,
+      event_msg.current_error);
+
+    publish_task_state(
+      task_id,
+      target_state,
+      module_name,
+      event_msg.detail.empty() ? "任务已进入正式管理流程" : event_msg.detail,
+      event_msg.progress,
+      event_msg.current_error,
+      false,
+      event_msg.is_error);
+
+    refresh_system_state();
     return;
   }
 
-  // 只处理当前活动任务对应的状态
+  // =========================
+  // 当前有活动任务时，只处理当前任务
+  // =========================
   if (task_id != active_task_ctx_.task_id) {
     RCLCPP_WARN(
       this->get_logger(),
-      "[task_id=%s] 非当前活动任务（当前活动任务=%s），忽略该状态",
+      "[task_id=%s] 当前活动任务=%s，忽略其他任务事件",
       task_id.c_str(),
       active_task_ctx_.task_id.c_str());
     return;
   }
 
-  active_task_ctx_.last_event_time = this->now();
-
-  // 尝试状态流转
-  if (!state_machine_.transition_to(target_state)) {
+  // 状态机流转校验
+  if (!task_state_machine_.transition_to(new_state)) {
     RCLCPP_ERROR(
       this->get_logger(),
-      "[task_id=%s] 非法状态流转：%s -> %s",
+      "[task_id=%s] 非法任务状态流转：%s -> %s",
       task_id.c_str(),
-      state_machine_.current_state_string().c_str(),
-      state_str.c_str());
+      active_task_ctx_.state.c_str(),
+      target_state.c_str());
 
-    publish_system_state(task_id, "ERROR", "非法状态流转", true);
-
-    // 非法状态流转时，进入 ERROR 并清理
-    if (state_machine_.transition_to(StateMachine::State::ERROR)) {
-      publish_system_state(task_id, "ERROR", "状态机已进入 ERROR", true);
-    }
+    publish_task_state(
+      task_id,
+      c::task_state::kFailed,
+      c::module::kSystemManager,
+      "非法任务状态流转",
+      active_task_ctx_.progress,
+      active_task_ctx_.current_error,
+      true,
+      true);
 
     finish_active_task();
-
-    if (state_machine_.transition_to(StateMachine::State::IDLE)) {
-      publish_system_state("", "IDLE", "系统恢复空闲", false);
-    }
+    refresh_system_state();
     return;
   }
 
-  // 正常发布正式状态
-  publish_system_state(task_id, state_str, raw_msg.message, raw_msg.is_error);
+  // 更新上下文
+  update_active_task(
+    target_state,
+    module_name,
+    event_msg.progress,
+    event_msg.current_error);
 
-  // 若任务结束，清理上下文并恢复 IDLE
-  if (target_state == StateMachine::State::FINISHED ||
-      target_state == StateMachine::State::CANCELLED ||
-      target_state == StateMachine::State::ERROR) {
+  // 发布正式 task_state
+  publish_task_state(
+    task_id,
+    target_state,
+    module_name,
+    event_msg.detail.empty() ? "任务状态已更新" : event_msg.detail,
+    event_msg.progress,
+    event_msg.current_error,
+    TaskStateMachine::is_terminal(new_state),
+    event_msg.is_error);
+
+  // 若为终态，则清理任务上下文
+  if (TaskStateMachine::is_terminal(new_state)) {
     finish_active_task();
-
-    if (state_machine_.transition_to(StateMachine::State::IDLE)) {
-      publish_system_state("", "IDLE", "系统恢复空闲", false);
-    }
   }
+
+  refresh_system_state();
+}
+
+std::string SystemManagerNode::resolve_target_task_state(
+  const robot_motion_msgs::msg::MotionEvent & event_msg) const
+{
+  // 若事件中显式带了 related_state，则优先使用
+  if (!event_msg.related_state.empty()) {
+    return event_msg.related_state;
+  }
+
+  // 否则根据事件名映射
+  return c::event_to_task_state(event_msg.event_name);
+}
+
+void SystemManagerNode::publish_task_state(
+  const std::string & task_id,
+  const std::string & state,
+  const std::string & source_module,
+  const std::string & message,
+  float progress,
+  double current_error,
+  bool is_terminal,
+  bool is_error)
+{
+  robot_motion_msgs::msg::TaskState msg;
+  msg.task_id = task_id;
+  msg.state = state;
+  msg.source_module = source_module;
+  msg.message = message;
+  msg.progress = progress;
+  msg.current_error = current_error;
+  msg.is_terminal = is_terminal;
+  msg.is_error = is_error;
+  msg.stamp = this->now();
+
+  task_state_pub_->publish(msg);
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[task_state] task_id=%s, state=%s, source=%s, progress=%.3f, error=%.6f, terminal=%s, is_error=%s, message=%s",
+    task_id.c_str(),
+    state.c_str(),
+    source_module.c_str(),
+    progress,
+    current_error,
+    is_terminal ? "true" : "false",
+    is_error ? "true" : "false",
+    message.c_str());
 }
 
 void SystemManagerNode::publish_system_state(
-  const std::string & task_id,
+  const std::string & active_task_id,
   const std::string & state,
   const std::string & message,
   bool is_error)
 {
   robot_motion_msgs::msg::SystemState msg;
-  msg.task_id = task_id;
+  msg.task_id = active_task_id;
   msg.state = state;
   msg.message = message;
   msg.is_error = is_error;
@@ -287,19 +470,32 @@ void SystemManagerNode::publish_system_state(
 
   RCLCPP_INFO(
     this->get_logger(),
-    "[system] task_id=%s, state=%s, message=%s, is_error=%s",
-    task_id.c_str(),
+    "[system_state] active_task_id=%s, state=%s, is_error=%s, message=%s",
+    active_task_id.c_str(),
     state.c_str(),
-    message.c_str(),
-    is_error ? "true" : "false");
+    is_error ? "true" : "false",
+    message.c_str());
 }
 
-} // namespace system_manager_pkg
+void SystemManagerNode::refresh_system_state()
+{
+  if (active_task_ctx_.active) {
+    publish_system_state(
+      active_task_ctx_.task_id,
+      c::system_state::kBusy,
+      "系统存在活动任务",
+      false);
+    return;
+  }
 
-// 如果需要组件化加载节点，则取消下面的注释，并在 CMakeLists.txt 中添加相关配置
-// 组件化加载不需要main函数，直接由 rclcpp_components 管理
-// 如果不需要组件化加载，则可以在 main.cpp 中直接创建并运行 MotionApiNode 实例
+  publish_system_state(
+    "",
+    c::system_state::kIdle,
+    "系统当前无活动任务",
+    false);
+}
+
+}  // namespace system_manager_pkg
 
 #include "rclcpp_components/register_node_macro.hpp"
-
 RCLCPP_COMPONENTS_REGISTER_NODE(system_manager_pkg::SystemManagerNode)

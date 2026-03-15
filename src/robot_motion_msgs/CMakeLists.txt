@@ -24,6 +24,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MotionCommand.msg"
   "msg/MotionEvent.msg"
   "msg/PlannedTrajectory.msg"
+  "msg/TaskState.msg"
   "srv/ResetSystem.srv"
   "action/MoveJoints.action"
   DEPENDENCIES

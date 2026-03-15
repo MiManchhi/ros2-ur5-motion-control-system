@@ -37,6 +37,7 @@ endif()
 add_library(system_manager_component SHARED
   src/system_manager_node.cpp
   src/state_machine.cpp
+  src/task_state_machine.cpp
 )
 
 target_include_directories(system_manager_component PUBLIC
