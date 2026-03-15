@@ -12,6 +12,7 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
@@ -31,9 +32,42 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-add_executable(robot_interface_node
+
+# =========================
+# 生成组件库
+# =========================
+add_library(robot_interface_component SHARED
   src/robot_interface_node.cpp
   src/ur_gazebo_backend.cpp
+)
+
+target_include_directories(robot_interface_component PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(robot_interface_component
+  rclcpp
+  rclcpp_components
+  std_msgs
+  sensor_msgs
+  trajectory_msgs
+  builtin_interfaces
+  robot_motion_msgs
+  robot_common_pkg
+)
+
+# 注册组件
+rclcpp_components_register_nodes(robot_interface_component
+  "robot_interface_pkg::RobotInterfaceNode"
+)
+
+# =========================
+# 如果同时保留普通启动方式，也可以继续加 main.cpp
+# 这样既能 ros2 run，也能 component load
+# =========================
+add_executable(robot_interface_node
+  src/main.cpp
 )
 
 target_include_directories(robot_interface_node PUBLIC
@@ -41,14 +75,23 @@ target_include_directories(robot_interface_node PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(robot_interface_node
-  rclcpp
-  trajectory_msgs
+target_link_libraries(robot_interface_node
+  robot_interface_component
 )
 
+ament_target_dependencies(robot_interface_node
+  rclcpp
+)
+
+# =========================
+# 安装
+# =========================
 install(TARGETS
+  robot_interface_component
   robot_interface_node
-  DESTINATION lib/${PROJECT_NAME}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY

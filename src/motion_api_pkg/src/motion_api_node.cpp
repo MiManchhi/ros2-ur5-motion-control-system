@@ -1,65 +1,65 @@
 #include "motion_api_pkg/motion_api_node.hpp"
 
+#include <algorithm>
 #include <chrono>
-#include <functional>
+#include <ctime>
+#include <iomanip>
 #include <sstream>
 #include <thread>
 #include <utility>
 
-#include "robot_common_pkg/constants.hpp"
-
 using namespace std::chrono_literals;
 
+namespace motion_api_pkg
+{
+
 MotionApiNode::MotionApiNode(const rclcpp::NodeOptions & options)
-: Node("motion_api_node", options), task_counter_(0)
+: Node("motion_api_node", options)
 {
   // =========================
-  // 1. 声明参数
+  // 声明并读取参数
   // =========================
-  this->declare_parameter<std::string>("action_name", "/move_joints");
-  this->declare_parameter<std::string>("system_state_topic", "/system_state");
-  this->declare_parameter<std::string>("motion_command_topic", "/motion_command");
+  this->declare_parameter<double>("default_speed_scale", 1.0);
   this->declare_parameter<double>("default_timeout_sec", 10.0);
-  this->declare_parameter<double>("feedback_period_sec", 0.5);
-  this->declare_parameter<double>("min_speed_scale", 0.1);
-  this->declare_parameter<double>("max_speed_scale", 1.0);
-  this->declare_parameter<int>("expected_joint_count", 6);
+  this->declare_parameter<bool>("enable_preempt", false);
+
+  this->get_parameter("default_speed_scale", default_speed_scale_);
+  this->get_parameter("default_timeout_sec", default_timeout_sec_);
+  this->get_parameter("enable_preempt", enable_preempt_);
 
   // =========================
-  // 2. 读取参数
+  // 创建发布器
   // =========================
-  action_name_ = this->get_parameter("action_name").as_string();
-  system_state_topic_ = this->get_parameter("system_state_topic").as_string();
-  motion_command_topic_ = this->get_parameter("motion_command_topic").as_string();
-  default_timeout_sec_ = this->get_parameter("default_timeout_sec").as_double();
-  feedback_period_sec_ = this->get_parameter("feedback_period_sec").as_double();
-  min_speed_scale_ = this->get_parameter("min_speed_scale").as_double();
-  max_speed_scale_ = this->get_parameter("max_speed_scale").as_double();
-  expected_joint_count_ = this->get_parameter("expected_joint_count").as_int();
+  // 向 planner_node 发布运动命令
+  motion_cmd_pub_ = this->create_publisher<robot_motion_msgs::msg::MotionCommand>(
+    "/motion_command", 10);
 
   // =========================
-  // 3. 初始化发布器
+  // 创建订阅器
   // =========================
-  system_state_pub_ =
-    this->create_publisher<robot_motion_msgs::msg::SystemState>(system_state_topic_, 10);
-
-  motion_command_pub_ =
-    this->create_publisher<robot_motion_msgs::msg::MotionCommand>(motion_command_topic_, 10);
+  // 接收系统状态
+  system_state_sub_ = this->create_subscription<robot_motion_msgs::msg::SystemState>(
+    "/system_state",
+    10,
+    std::bind(&MotionApiNode::on_system_state, this, std::placeholders::_1));
 
   // =========================
-  // 4. 创建 Action Server
+  // 创建 Action Server
   // =========================
   action_server_ = rclcpp_action::create_server<MoveJoints>(
     this,
-    action_name_,
+    "/move_joints",
     std::bind(&MotionApiNode::handle_goal, this, std::placeholders::_1, std::placeholders::_2),
     std::bind(&MotionApiNode::handle_cancel, this, std::placeholders::_1),
     std::bind(&MotionApiNode::handle_accepted, this, std::placeholders::_1));
 
-  RCLCPP_INFO(this->get_logger(), "MotionApiNode started.");
-  RCLCPP_INFO(this->get_logger(), "Action server: %s", action_name_.c_str());
-  RCLCPP_INFO(this->get_logger(), "System state topic: %s", system_state_topic_.c_str());
-  RCLCPP_INFO(this->get_logger(), "Motion command topic: %s", motion_command_topic_.c_str());
+  RCLCPP_INFO(this->get_logger(), "motion_api_node 已启动");
+  RCLCPP_INFO(
+    this->get_logger(),
+    "参数：default_speed_scale=%.2f, default_timeout_sec=%.2f, enable_preempt=%s",
+    default_speed_scale_,
+    default_timeout_sec_,
+    enable_preempt_ ? "true" : "false");
 }
 
 rclcpp_action::GoalResponse MotionApiNode::handle_goal(
@@ -68,28 +68,34 @@ rclcpp_action::GoalResponse MotionApiNode::handle_goal(
 {
   (void)uuid;
 
-  // 收到新任务，先打印日志
-  RCLCPP_INFO(
-    this->get_logger(),
-    "Received MoveJoints goal: task_name=%s",
-    goal->task_name.c_str());
+  RCLCPP_INFO(this->get_logger(), "收到 /move_joints 新任务请求");
 
-  // 参数合法性校验
+  // 先校验任务参数合法性
   std::string reason;
-  if (!validate_goal(goal, reason)) {
-    RCLCPP_WARN(this->get_logger(), "Goal rejected: %s", reason.c_str());
-
-    // 发布系统状态：rejected
-    publish_system_state(
-      "",
-      robot_common_pkg::constants::state::kRejected,
-      reason,
-      true);
-
+  if (!validate_goal(*goal, reason)) {
+    RCLCPP_WARN(this->get_logger(), "任务校验失败：%s", reason.c_str());
     return rclcpp_action::GoalResponse::REJECT;
   }
 
-  // 阶段 2 中，只要参数合法就接收任务
+  // 当前版本采用“单任务串行执行”策略
+  // 如果当前已经有活动任务，则拒绝新任务
+  if (active_goal_ctx_.active) {
+    if (!enable_preempt_) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "当前已有活动任务 task_id=%s，拒绝新任务",
+        active_goal_ctx_.task_id.c_str());
+      return rclcpp_action::GoalResponse::REJECT;
+    }
+
+    // 这里先保留抢占扩展点，但当前版本不真正实现
+    RCLCPP_WARN(
+      this->get_logger(),
+      "enable_preempt=true，但当前版本尚未实现抢占逻辑，仍然拒绝新任务");
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+
+  // 接受并开始执行
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
@@ -98,213 +104,348 @@ rclcpp_action::CancelResponse MotionApiNode::handle_cancel(
 {
   (void)goal_handle;
 
-  RCLCPP_WARN(this->get_logger(), "Received request to cancel goal.");
+  RCLCPP_WARN(this->get_logger(), "收到任务取消请求");
 
-  // 阶段 2 中允许取消
+  // 当前版本先直接允许取消
   return rclcpp_action::CancelResponse::ACCEPT;
 }
 
 void MotionApiNode::handle_accepted(const std::shared_ptr<GoalHandleMoveJoints> goal_handle)
 {
-  // Action 执行通常不能阻塞 executor，所以放到独立线程
-  std::thread(&MotionApiNode::execute, this, goal_handle).detach();
+  // 注意：不要在该回调中做阻塞式耗时操作
+  // 因此这里开一个线程去执行任务主流程
+  std::thread(
+    std::bind(&MotionApiNode::execute_goal, this, std::placeholders::_1),
+    goal_handle).detach();
 }
 
-void MotionApiNode::execute(const std::shared_ptr<GoalHandleMoveJoints> goal_handle)
+void MotionApiNode::on_system_state(const robot_motion_msgs::msg::SystemState::SharedPtr msg)
 {
-  const auto goal = goal_handle->get_goal();
+  latest_system_state_ = msg->state;
 
-  // 1. 生成系统内部唯一 task_id
-  const std::string task_id = generate_task_id();
-
-  RCLCPP_INFO(
-    this->get_logger(),
-    "Accepted task: task_id=%s, task_name=%s",
-    task_id.c_str(),
-    goal->task_name.c_str());
-
-  // 2. 发布系统状态：accepted
-  publish_system_state(
-    task_id,
-    robot_common_pkg::constants::state::kAccepted,
-    "task accepted by motion_api_node",
-    false);
-
-  // 3. 准备 Action 的 feedback/result
-  auto feedback = std::make_shared<MoveJoints::Feedback>();
-  auto result = std::make_shared<MoveJoints::Result>();
-
-  // 4. 先反馈：planning
-  feedback->task_id = task_id;
-  feedback->current_state = robot_common_pkg::constants::state::kPlanning;
-  feedback->progress = 0.2;
-  feedback->current_error = 0.0;
-  goal_handle->publish_feedback(feedback);
-
-  publish_system_state(
-    task_id,
-    robot_common_pkg::constants::state::kPlanning,
-    "motion api is forwarding motion command to planner",
-    false);
-
-  // 5. 将 action 目标转成内部 MotionCommand 消息，发给 planner
-  publish_motion_command(task_id, goal);
-
-  RCLCPP_INFO(
-    this->get_logger(),
-    "Published MotionCommand: task_id=%s -> topic=%s",
-    task_id.c_str(),
-    motion_command_topic_.c_str());
-
-  // 6. 再反馈一次：
-  // 阶段 2 中这里只表示“已成功发给规划层”，并不表示底层已经完全执行结束
-  std::this_thread::sleep_for(std::chrono::duration<double>(feedback_period_sec_));
-
-  if (goal_handle->is_canceling()) {
-    result->success = false;
-    result->task_id = task_id;
-    result->message = "task canceled before planner handoff finished";
-    result->final_error = 0.0;
-
-    publish_system_state(
-      task_id,
-      robot_common_pkg::constants::state::kCanceled,
-      "task canceled by client",
-      true);
-
-    goal_handle->canceled(result);
-
-    RCLCPP_WARN(this->get_logger(), "Task canceled: %s", task_id.c_str());
+  // 当前没有活动任务，则不处理
+  if (!active_goal_ctx_.active || !active_goal_ctx_.goal_handle) {
     return;
   }
 
-  feedback->task_id = task_id;
-  feedback->current_state = robot_common_pkg::constants::state::kPlanning;
-  feedback->progress = 0.8;
-  feedback->current_error = 0.0;
-  goal_handle->publish_feedback(feedback);
-
-  // 7. 阶段 2 简化逻辑：
-  // 只要成功发给 planner，就先认为“上游任务提交成功”
-  result->success = true;
-  result->task_id = task_id;
-  result->message = "motion command has been forwarded to planner";
-  result->final_error = 0.0;
-
-  publish_system_state(
-    task_id,
-    robot_common_pkg::constants::state::kPlanning,
-    "motion command forwarded successfully, waiting for downstream execution",
-    false);
-
-  goal_handle->succeed(result);
+  // 只处理“当前活动任务”的系统状态
+  if (msg->task_id != active_goal_ctx_.task_id) {
+    return;
+  }
 
   RCLCPP_INFO(
     this->get_logger(),
-    "Task finished in stage2 handoff flow: task_id=%s",
-    task_id.c_str());
+    "[task_id=%s] 收到系统状态：state=%s, message=%s, is_error=%s",
+    msg->task_id.c_str(),
+    msg->state.c_str(),
+    msg->message.c_str(),
+    msg->is_error ? "true" : "false");
+
+  // 根据系统状态向 action 客户端发送 feedback 或结束任务
+  if (msg->state == "PLANNING") {
+    active_goal_ctx_.latest_progress = 0.1;
+
+    publish_feedback(
+      active_goal_ctx_.goal_handle,
+      active_goal_ctx_.task_id,
+      "PLANNING",
+      active_goal_ctx_.latest_progress,
+      active_goal_ctx_.latest_error);
+
+  } else if (msg->state == "RUNNING") {
+    // 当前先简化处理：进入 RUNNING 后，将进度更新到至少 0.5
+    // 后续 controller_node 完善后，可根据真实执行进度进行更新
+    active_goal_ctx_.latest_progress = std::max(active_goal_ctx_.latest_progress, 0.5);
+
+    publish_feedback(
+      active_goal_ctx_.goal_handle,
+      active_goal_ctx_.task_id,
+      "RUNNING",
+      active_goal_ctx_.latest_progress,
+      active_goal_ctx_.latest_error);
+
+  } else if (msg->state == "FINISHED") {
+    finish_goal_success(
+      active_goal_ctx_.goal_handle,
+      active_goal_ctx_.task_id,
+      msg->message,
+      active_goal_ctx_.latest_error);
+
+  } else if (msg->state == "ERROR") {
+    finish_goal_abort(
+      active_goal_ctx_.goal_handle,
+      active_goal_ctx_.task_id,
+      msg->message,
+      active_goal_ctx_.latest_error);
+
+  } else if (msg->state == "CANCELLED") {
+    finish_goal_cancel(
+      active_goal_ctx_.goal_handle,
+      active_goal_ctx_.task_id,
+      msg->message,
+      active_goal_ctx_.latest_error);
+  }
 }
 
-bool MotionApiNode::validate_goal(
-  const std::shared_ptr<const MoveJoints::Goal> & goal,
-  std::string & reason) const
+bool MotionApiNode::validate_goal(const MoveJoints::Goal & goal, std::string & reason)
 {
   // joint_names 不能为空
-  if (goal->joint_names.empty()) {
-    reason = "joint_names must not be empty";
+  if (goal.joint_names.empty()) {
+    reason = "joint_names 不能为空";
     return false;
   }
 
   // target_positions 不能为空
-  if (goal->target_positions.empty()) {
-    reason = "target_positions must not be empty";
+  if (goal.target_positions.empty()) {
+    reason = "target_positions 不能为空";
     return false;
   }
 
-  // joint_names 和 target_positions 必须一一对应
-  if (goal->joint_names.size() != goal->target_positions.size()) {
-    reason = "joint_names size must equal target_positions size";
+  // 长度必须一致
+  if (goal.joint_names.size() != goal.target_positions.size()) {
+    reason = "joint_names 与 target_positions 长度不一致";
     return false;
   }
 
-  // 如果设置了预期关节数，则严格检查
-  if (expected_joint_count_ > 0 &&
-      static_cast<int>(goal->joint_names.size()) != expected_joint_count_) {
-    std::ostringstream oss;
-    oss << "joint count mismatch, expected " << expected_joint_count_
-        << ", got " << goal->joint_names.size();
-    reason = oss.str();
+  // 当前按 UR5 六关节实现校验
+  if (goal.joint_names.size() != 6) {
+    reason = "当前实现要求关节数量为 6";
     return false;
   }
 
-  // 检查速度缩放系数范围
-  if (goal->speed_scale < min_speed_scale_ || goal->speed_scale > max_speed_scale_) {
-    std::ostringstream oss;
-    oss << "speed_scale out of range [" << min_speed_scale_
-        << ", " << max_speed_scale_ << "]";
-    reason = oss.str();
+  // speed_scale 不能为负
+  if (goal.speed_scale < 0.0) {
+    reason = "speed_scale 不能小于 0";
     return false;
   }
 
-  // 超时时间：如果 goal 中传的是无效值，则后面会回退到默认值
-  const double timeout_sec =
-    (goal->timeout_sec > 0.0) ? goal->timeout_sec : default_timeout_sec_;
-
-  if (timeout_sec <= 0.0) {
-    reason = "timeout_sec must be > 0";
+  // timeout_sec 不能为负
+  if (goal.timeout_sec < 0.0) {
+    reason = "timeout_sec 不能小于 0";
     return false;
   }
 
-  reason = "ok";
   return true;
 }
 
 std::string MotionApiNode::generate_task_id()
 {
-  // 使用当前 ROS 时间戳 + 自增计数，生成唯一 task_id
-  const auto now_ns = this->now().nanoseconds();
-  const auto id = ++task_counter_;
+  // task_id 形式：
+  // task_YYYYMMDD_HHMMSS_001
+  auto now = this->now();
+  auto sec = now.seconds();
+
+  std::time_t time_sec = static_cast<std::time_t>(sec);
+  std::tm tm_time {};
+
+#ifdef _WIN32
+  localtime_s(&tm_time, &time_sec);
+#else
+  localtime_r(&time_sec, &tm_time);
+#endif
 
   std::ostringstream oss;
-  oss << "task_" << now_ns << "_" << id;
+  oss << "task_"
+      << std::put_time(&tm_time, "%Y%m%d_%H%M%S")
+      << "_"
+      << std::setw(3) << std::setfill('0') << (++task_counter_);
+
   return oss.str();
 }
 
-void MotionApiNode::publish_system_state(
-  const std::string & task_id,
-  const std::string & state,
-  const std::string & message,
-  bool is_error)
+void MotionApiNode::execute_goal(const std::shared_ptr<GoalHandleMoveJoints> goal_handle)
 {
-  robot_motion_msgs::msg::SystemState msg;
-  msg.task_id = task_id;
-  msg.state = state;
-  msg.message = message;
-  msg.is_error = is_error;
-  msg.stamp = this->now();
+  const auto goal = goal_handle->get_goal();
 
-  system_state_pub_->publish(msg);
+  // 生成本次任务唯一 ID
+  const std::string task_id = generate_task_id();
+
+  // 初始化当前活动任务上下文
+  active_goal_ctx_.active = true;
+  active_goal_ctx_.task_id = task_id;
+  active_goal_ctx_.goal_handle = goal_handle;
+  active_goal_ctx_.latest_progress = 0.0;
+  active_goal_ctx_.latest_error = 0.0;
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[task_id=%s] 开始执行任务，task_name=%s",
+    task_id.c_str(),
+    goal->task_name.c_str());
+
+  // 先向客户端返回一个初始 feedback
+  publish_feedback(goal_handle, task_id, "ACCEPTED", 0.0, 0.0);
+
+  // 将任务转成 MotionCommand 发给 planner_node
+  publish_motion_command(task_id, *goal);
+
+  // 如果 goal 中未显式给 timeout_sec，则使用默认超时时间
+  const double timeout_sec =
+    (goal->timeout_sec > 0.0) ? goal->timeout_sec : default_timeout_sec_;
+
+  auto start_time = this->now();
+  rclcpp::Rate rate(10.0);
+
+  // 简单轮询等待系统状态推进
+  while (rclcpp::ok()) {
+    // 如果客户端在执行过程中发起取消
+    if (goal_handle->is_canceling()) {
+      finish_goal_cancel(goal_handle, task_id, "任务被客户端取消", active_goal_ctx_.latest_error);
+      return;
+    }
+
+    // 如果当前任务已经被结束函数清理，则退出线程
+    if (!active_goal_ctx_.active || active_goal_ctx_.task_id != task_id) {
+      return;
+    }
+
+    // 超时保护
+    const double elapsed = (this->now() - start_time).seconds();
+    if (elapsed > timeout_sec) {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "[task_id=%s] 任务执行超时，timeout=%.2f 秒",
+        task_id.c_str(),
+        timeout_sec);
+
+      finish_goal_abort(goal_handle, task_id, "任务执行超时", active_goal_ctx_.latest_error);
+      return;
+    }
+
+    rate.sleep();
+  }
 }
 
 void MotionApiNode::publish_motion_command(
   const std::string & task_id,
-  const std::shared_ptr<const MoveJoints::Goal> & goal)
+  const MoveJoints::Goal & goal)
 {
   robot_motion_msgs::msg::MotionCommand cmd_msg;
-
-  // 将 action 任务中的目标信息转换为内部命令消息
   cmd_msg.task_id = task_id;
-  cmd_msg.joint_names = goal->joint_names;
-  cmd_msg.positions = goal->target_positions;
+  cmd_msg.joint_names = goal.joint_names;
+  cmd_msg.positions = goal.target_positions;
   cmd_msg.stamp = this->now();
 
-  motion_command_pub_->publish(cmd_msg);
+  motion_cmd_pub_->publish(cmd_msg);
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[task_id=%s] 已发布 /motion_command，关节数=%zu",
+    task_id.c_str(),
+    cmd_msg.joint_names.size());
 }
 
-int main(int argc, char ** argv)
+void MotionApiNode::publish_feedback(
+  const std::shared_ptr<GoalHandleMoveJoints> goal_handle,
+  const std::string & task_id,
+  const std::string & current_state,
+  double progress,
+  double current_error)
 {
-  rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<MotionApiNode>());
-  rclcpp::shutdown();
-  return 0;
+  auto feedback = std::make_shared<MoveJoints::Feedback>();
+  feedback->task_id = task_id;
+  feedback->current_state = current_state;
+  feedback->progress = progress;
+  feedback->current_error = current_error;
+
+  goal_handle->publish_feedback(feedback);
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[task_id=%s] 反馈：state=%s, progress=%.2f, error=%.6f",
+    task_id.c_str(),
+    current_state.c_str(),
+    progress,
+    current_error);
 }
+
+void MotionApiNode::finish_goal_success(
+  const std::shared_ptr<GoalHandleMoveJoints> goal_handle,
+  const std::string & task_id,
+  const std::string & message,
+  double final_error)
+{
+  auto result = std::make_shared<MoveJoints::Result>();
+  result->success = true;
+  result->task_id = task_id;
+  result->message = message;
+  result->final_error = final_error;
+
+  goal_handle->succeed(result);
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[task_id=%s] 任务成功结束：%s，final_error=%.6f",
+    task_id.c_str(),
+    message.c_str(),
+    final_error);
+
+  reset_active_goal_context();
+}
+
+void MotionApiNode::finish_goal_abort(
+  const std::shared_ptr<GoalHandleMoveJoints> goal_handle,
+  const std::string & task_id,
+  const std::string & message,
+  double final_error)
+{
+  auto result = std::make_shared<MoveJoints::Result>();
+  result->success = false;
+  result->task_id = task_id;
+  result->message = message;
+  result->final_error = final_error;
+
+  goal_handle->abort(result);
+
+  RCLCPP_ERROR(
+    this->get_logger(),
+    "[task_id=%s] 任务失败结束：%s，final_error=%.6f",
+    task_id.c_str(),
+    message.c_str(),
+    final_error);
+
+  reset_active_goal_context();
+}
+
+void MotionApiNode::finish_goal_cancel(
+  const std::shared_ptr<GoalHandleMoveJoints> goal_handle,
+  const std::string & task_id,
+  const std::string & message,
+  double final_error)
+{
+  auto result = std::make_shared<MoveJoints::Result>();
+  result->success = false;
+  result->task_id = task_id;
+  result->message = message;
+  result->final_error = final_error;
+
+  goal_handle->canceled(result);
+
+  RCLCPP_WARN(
+    this->get_logger(),
+    "[task_id=%s] 任务取消结束：%s，final_error=%.6f",
+    task_id.c_str(),
+    message.c_str(),
+    final_error);
+
+  reset_active_goal_context();
+}
+
+void MotionApiNode::reset_active_goal_context()
+{
+  active_goal_ctx_.active = false;
+  active_goal_ctx_.task_id.clear();
+  active_goal_ctx_.goal_handle.reset();
+  active_goal_ctx_.latest_progress = 0.0;
+  active_goal_ctx_.latest_error = 0.0;
+}
+
+}  // namespace motion_api_pkg
+
+// 如果需要组件化加载节点，则取消下面的注释，并在 CMakeLists.txt 中添加相关配置
+// 组件化加载不需要main函数，直接由 rclcpp_components 管理
+// 如果不需要组件化加载，则可以在 main.cpp 中直接创建并运行 MotionApiNode 实例
+
+#include "rclcpp_components/register_node_macro.hpp"
+
+RCLCPP_COMPONENTS_REGISTER_NODE(motion_api_pkg::MotionApiNode)

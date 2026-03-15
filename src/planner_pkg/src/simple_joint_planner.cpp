@@ -1,61 +1,95 @@
 #include "planner_pkg/simple_joint_planner.hpp"
+#include "rclcpp/duration.hpp"
 
-#include <algorithm>
-#include <stdexcept>
-#include <vector>
-
-#include "builtin_interfaces/msg/duration.hpp"
-#include "trajectory_msgs/msg/joint_trajectory_point.hpp"
-
-trajectory_msgs::msg::JointTrajectory SimpleJointPlanner::plan(
-    const std::string & task_id,
-    const std::vector<std::string> & joint_names,
-    const std::vector<double> & target_positions,
-    double duration_sec,
-    int interpolation_points) const
+namespace planner_pkg
 {
-  (void)task_id;
 
-  if (joint_names.empty()) {
-    throw std::runtime_error("joint_names is empty");
+void SimpleJointPlanner::set_traj_points(int traj_points)
+{
+  // 至少需要两个点：起点和终点
+  if (traj_points <= 1) {
+    traj_points_ = 2;
+    return;
   }
 
-  if (joint_names.size() != target_positions.size()) {
-    throw std::runtime_error("joint_names size does not match target_positions size");
+  traj_points_ = traj_points;
+}
+
+void SimpleJointPlanner::set_plan_duration(double plan_duration_sec)
+{
+  // 规划总时长必须大于 0
+  if (plan_duration_sec <= 0.0) {
+    plan_duration_sec_ = 2.0;
+    return;
   }
 
-  if (duration_sec <= 0.0) {
-    throw std::runtime_error("duration_sec must be > 0");
+  plan_duration_sec_ = plan_duration_sec;
+}
+
+SimpleJointPlanner::PlanResult SimpleJointPlanner::plan(const PlanRequest & request) const
+{
+  PlanResult result;
+
+  // =========================
+  // 输入校验
+  // =========================
+  if (request.joint_names.empty()) {
+    result.error_msg = "joint_names 为空";
+    return result;
   }
 
-  if (interpolation_points < 2) {
-    throw std::runtime_error("interpolation_points must be >= 2");
+  if (request.current_positions.empty()) {
+    result.error_msg = "current_positions 为空";
+    return result;
   }
 
-  trajectory_msgs::msg::JointTrajectory traj;
-  traj.joint_names = joint_names;
-  traj.points.reserve(static_cast<size_t>(interpolation_points));
+  if (request.target_positions.empty()) {
+    result.error_msg = "target_positions 为空";
+    return result;
+  }
 
-  for (int i = 0; i < interpolation_points; ++i) {
-    const double ratio =
-      static_cast<double>(i + 1) / static_cast<double>(interpolation_points);
+  if (request.joint_names.size() != request.current_positions.size() ||
+      request.joint_names.size() != request.target_positions.size()) {
+    result.error_msg = "规划输入维度不一致";
+    return result;
+  }
+
+  // =========================
+  // 初始化轨迹
+  // =========================
+  auto & traj = result.trajectory;
+  traj.joint_names = request.joint_names;
+  traj.points.clear();
+  traj.points.reserve(static_cast<size_t>(traj_points_));
+
+  // 将总时长均匀分配到每个轨迹点
+  const double dt = plan_duration_sec_ / static_cast<double>(traj_points_ - 1);
+
+  // =========================
+  // 使用关节空间线性插值生成轨迹
+  // q_i = q_start + ratio * (q_goal - q_start)
+  // =========================
+  for (int i = 0; i < traj_points_; ++i) {
+    const double ratio = static_cast<double>(i) / static_cast<double>(traj_points_ - 1);
 
     trajectory_msgs::msg::JointTrajectoryPoint point;
-    point.positions.reserve(target_positions.size());
-    point.velocities.resize(target_positions.size(), 0.0);
-    point.accelerations.resize(target_positions.size(), 0.0);
+    point.positions.resize(request.joint_names.size());
 
-    for (const auto & target : target_positions) {
-      point.positions.push_back(target * ratio);
+    for (size_t j = 0; j < request.joint_names.size(); ++j) {
+      point.positions[j] =
+        request.current_positions[j] +
+        ratio * (request.target_positions[j] - request.current_positions[j]);
     }
 
-    const double time_sec = duration_sec * ratio;
-    point.time_from_start.sec = static_cast<int32_t>(time_sec);
-    point.time_from_start.nanosec =
-      static_cast<uint32_t>((time_sec - static_cast<double>(point.time_from_start.sec)) * 1e9);
+    // 设置当前轨迹点相对起始时刻的时间
+    const double time_from_start_sec = dt * static_cast<double>(i);
+    point.time_from_start = rclcpp::Duration::from_seconds(time_from_start_sec);
 
     traj.points.push_back(point);
   }
 
-  return traj;
+  result.success = true;
+  return result;
 }
+
+}  // namespace planner_pkg

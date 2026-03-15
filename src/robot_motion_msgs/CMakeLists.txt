@@ -13,6 +13,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(builtin_interfaces REQUIRED)
+find_package(trajectory_msgs REQUIRED)
 find_package(action_msgs REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
@@ -22,11 +23,13 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SystemState.msg"
   "msg/MotionCommand.msg"
   "msg/MotionEvent.msg"
+  "msg/PlannedTrajectory.msg"
   "srv/ResetSystem.srv"
   "action/MoveJoints.action"
   DEPENDENCIES
     builtin_interfaces
     action_msgs
+    trajectory_msgs
 )
 
 ## 修改为标准接口包

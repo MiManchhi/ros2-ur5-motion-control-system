@@ -12,10 +12,12 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
+find_package(robot_common_pkg REQUIRED)
 find_package(robot_motion_msgs REQUIRED)
 
 if(BUILD_TESTING)
@@ -30,9 +32,41 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-add_executable(controller_node
+# =========================
+# 生成组件库
+# =========================
+add_library(controller_component SHARED
   src/controller_node.cpp
   src/trajectory_executor.cpp
+)
+
+target_include_directories(controller_component PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(controller_component
+  rclcpp
+  rclcpp_components
+  std_msgs
+  sensor_msgs
+  trajectory_msgs
+  builtin_interfaces
+  robot_motion_msgs
+  robot_common_pkg
+)
+
+# 注册组件
+rclcpp_components_register_nodes(controller_component
+  "controller_pkg::ControllerNode"
+)
+
+# =========================
+# 如果同时保留普通启动方式，也可以继续加 main.cpp
+# 这样既能 ros2 run，也能 component load
+# =========================
+add_executable(controller_node
+  src/main.cpp
 )
 
 target_include_directories(controller_node PUBLIC
@@ -40,14 +74,23 @@ target_include_directories(controller_node PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(controller_node
-  rclcpp
-  trajectory_msgs
+target_link_libraries(controller_node
+  controller_component
 )
 
+ament_target_dependencies(controller_node
+  rclcpp
+)
+
+# =========================
+# 安装
+# =========================
 install(TARGETS
+  controller_component
   controller_node
-  DESTINATION lib/${PROJECT_NAME}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY

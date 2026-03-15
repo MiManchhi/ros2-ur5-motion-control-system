@@ -1,0 +1,3 @@
+string task_id
+trajectory_msgs/JointTrajectory trajectory
+builtin_interfaces/Time stamp

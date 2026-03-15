@@ -9,10 +9,13 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# find dependencies
+# =========================
+# 查找依赖
+# =========================
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
@@ -22,18 +25,46 @@ find_package(robot_common_pkg REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
-  # the following line skips the linter which checks for copyrights
-  # comment the line when a copyright and license is added to all source files
   set(ament_cmake_copyright_FOUND TRUE)
-  # the following line skips cpplint (only works in a git repo)
-  # comment the line when this package is in a git repo and when
-  # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-add_executable(motion_api_node
+# =========================
+# 生成组件库
+# =========================
+add_library(motion_api_component SHARED
   src/motion_api_node.cpp
+)
+
+target_include_directories(motion_api_component PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(motion_api_component
+  rclcpp
+  rclcpp_action
+  rclcpp_components
+  std_msgs
+  sensor_msgs
+  trajectory_msgs
+  builtin_interfaces
+  robot_motion_msgs
+  robot_common_pkg
+)
+
+# 注册组件
+rclcpp_components_register_nodes(motion_api_component
+  "motion_api_pkg::MotionApiNode"
+)
+
+# =========================
+# 如果同时保留普通启动方式，也可以继续加 main.cpp
+# 这样既能 ros2 run，也能 component load
+# =========================
+add_executable(motion_api_node
+  src/main.cpp
 )
 
 target_include_directories(motion_api_node PUBLIC
@@ -41,18 +72,23 @@ target_include_directories(motion_api_node PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(motion_api_node
-  rclcpp
-  rclcpp_action
-  std_msgs
-  builtin_interfaces
-  robot_motion_msgs
-  robot_common_pkg
+target_link_libraries(motion_api_node
+  motion_api_component
 )
 
+ament_target_dependencies(motion_api_node
+  rclcpp
+)
+
+# =========================
+# 安装
+# =========================
 install(TARGETS
+  motion_api_component
   motion_api_node
-  DESTINATION lib/${PROJECT_NAME}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY
