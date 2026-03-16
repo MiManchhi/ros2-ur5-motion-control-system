@@ -1,7 +1,11 @@
 #include "robot_interface_pkg/robot_interface_node.hpp"
 
+#include "robot_common_pkg/constants.hpp"
+
 namespace robot_interface_pkg
 {
+
+namespace c = robot_common_pkg::constants;
 
 RobotInterfaceNode::RobotInterfaceNode(const rclcpp::NodeOptions & options)
 : Node("robot_interface_node", options)
@@ -32,15 +36,18 @@ RobotInterfaceNode::RobotInterfaceNode(const rclcpp::NodeOptions & options)
   // =========================
   // 创建发布器
   // =========================
+
+  // 发布到底层控制器
   controller_cmd_pub_ =
     this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
       backend_.controller_topic(),
       10);
 
-  system_state_pub_ =
-    this->create_publisher<robot_motion_msgs::msg::SystemState>(
-      "/system_state_raw",
-      10);
+  // 发布任务事件到 manager
+  motion_event_pub_ =
+    this->create_publisher<robot_motion_msgs::msg::MotionEvent>(
+      "/motion_event",
+      20);
 
   RCLCPP_INFO(this->get_logger(), "robot_interface_node 已启动");
   RCLCPP_INFO(
@@ -61,6 +68,8 @@ void RobotInterfaceNode::on_joint_command(
 
   trajectory_msgs::msg::JointTrajectory traj;
   std::string error_msg;
+
+  // 调用后端适配器进行转换
   if (!backend_.convert_command(*msg, traj, error_msg)) {
     RCLCPP_ERROR(
       this->get_logger(),
@@ -68,10 +77,20 @@ void RobotInterfaceNode::on_joint_command(
       task_id.c_str(),
       error_msg.c_str());
 
-    publish_system_state(task_id, "ERROR", error_msg, true);
+    // 接口层失败不再直接写 /system_state_raw
+    // 而是上报 execution_failed 事件，由 manager 统一收敛为正式 task_state=failed
+    publish_motion_event(
+      task_id,
+      c::event::kExecutionFailed,
+      c::task_state::kFailed,
+      error_msg,
+      0.0F,
+      0.0,
+      true);
     return;
   }
 
+  // 转换成功，发布到底层控制器
   controller_cmd_pub_->publish(traj);
 
   RCLCPP_INFO(
@@ -82,36 +101,42 @@ void RobotInterfaceNode::on_joint_command(
     traj.joint_names.size());
 }
 
-void RobotInterfaceNode::publish_system_state(
+void RobotInterfaceNode::publish_motion_event(
   const std::string & task_id,
-  const std::string & state,
-  const std::string & message,
+  const std::string & event_name,
+  const std::string & related_state,
+  const std::string & detail,
+  float progress,
+  double current_error,
   bool is_error)
 {
-  robot_motion_msgs::msg::SystemState msg;
+  robot_motion_msgs::msg::MotionEvent msg;
   msg.task_id = task_id;
-  msg.state = state;
-  msg.message = message;
+  msg.module_name = c::module::kRobotInterface;
+  msg.event_name = event_name;
+  msg.related_state = related_state;
+  msg.detail = detail;
+  msg.progress = progress;
+  msg.current_error = current_error;
   msg.is_error = is_error;
   msg.stamp = this->now();
 
-  system_state_pub_->publish(msg);
+  motion_event_pub_->publish(msg);
 
   RCLCPP_INFO(
     this->get_logger(),
-    "[task_id=%s] 发布 /system_state：state=%s, message=%s, is_error=%s",
+    "[motion_event] task_id=%s, module=%s, event=%s, related_state=%s, progress=%.3f, error=%.6f, is_error=%s, detail=%s",
     task_id.c_str(),
-    state.c_str(),
-    message.c_str(),
-    is_error ? "true" : "false");
+    c::module::kRobotInterface,
+    event_name.c_str(),
+    related_state.c_str(),
+    progress,
+    current_error,
+    is_error ? "true" : "false",
+    detail.c_str());
 }
 
 }  // namespace robot_interface_pkg
 
-// 如果需要组件化加载节点，则取消下面的注释，并在 CMakeLists.txt 中添加相关配置
-// 组件化加载不需要main函数，直接由 rclcpp_components 管理
-// 如果不需要组件化加载，则可以在 main.cpp 中直接创建并运行 MotionApiNode 实例
-
 #include "rclcpp_components/register_node_macro.hpp"
-
 RCLCPP_COMPONENTS_REGISTER_NODE(robot_interface_pkg::RobotInterfaceNode)

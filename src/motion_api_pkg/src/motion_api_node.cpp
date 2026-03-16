@@ -156,70 +156,95 @@ void MotionApiNode::handle_accepted(const std::shared_ptr<GoalHandleMoveJoints> 
 
 void MotionApiNode::on_task_state(const robot_motion_msgs::msg::TaskState::SharedPtr msg)
 {
-  std::lock_guard<std::mutex> lock(goal_mutex_);
+  std::shared_ptr<GoalHandleMoveJoints> goal_handle;
+  std::string task_id;
+  std::string state;
+  std::string message;
+  double progress = 0.0;
+  double current_error = 0.0;
+  bool is_terminal = false;
+  bool is_error = false;
 
-  // 当前没有活动任务，不处理
-  if (!active_goal_ctx_.active || !active_goal_ctx_.goal_handle) {
-    return;
+  {
+    // 只在这里访问共享上下文
+    std::lock_guard<std::mutex> lock(goal_mutex_);
+
+    // 当前没有活动任务，不处理
+    if (!active_goal_ctx_.active || !active_goal_ctx_.goal_handle) {
+      return;
+    }
+
+    // 只处理当前活动任务的状态
+    if (msg->task_id != active_goal_ctx_.task_id) {
+      return;
+    }
+
+    // 更新上下文中的最近状态
+    active_goal_ctx_.latest_progress = msg->progress;
+    active_goal_ctx_.latest_error = msg->current_error;
+    active_goal_ctx_.latest_task_state = msg->state;
+
+    // 将后续要使用的数据拷贝到局部变量
+    goal_handle = active_goal_ctx_.goal_handle;
+    task_id = active_goal_ctx_.task_id;
+    state = msg->state;
+    message = msg->message;
+    progress = msg->progress;
+    current_error = msg->current_error;
+    is_terminal = msg->is_terminal;
+    is_error = msg->is_error;
   }
 
-  // 只处理当前活动任务的状态
-  if (msg->task_id != active_goal_ctx_.task_id) {
-    return;
-  }
-
-  active_goal_ctx_.latest_progress = msg->progress;
-  active_goal_ctx_.latest_error = msg->current_error;
-  active_goal_ctx_.latest_task_state = msg->state;
+  // ===== 从这里开始已经出锁 =====
 
   RCLCPP_INFO(
     this->get_logger(),
     "[task_id=%s] 收到正式 task_state：state=%s, progress=%.3f, error=%.6f, terminal=%s, is_error=%s, message=%s",
-    msg->task_id.c_str(),
-    msg->state.c_str(),
-    msg->progress,
-    msg->current_error,
-    msg->is_terminal ? "true" : "false",
-    msg->is_error ? "true" : "false",
-    msg->message.c_str());
+    task_id.c_str(),
+    state.c_str(),
+    progress,
+    current_error,
+    is_terminal ? "true" : "false",
+    is_error ? "true" : "false",
+    message.c_str());
 
   // 非终态：只发 feedback
-  if (!msg->is_terminal) {
+  if (!is_terminal) {
     publish_feedback(
-      active_goal_ctx_.goal_handle,
-      active_goal_ctx_.task_id,
-      msg->state,
-      msg->progress,
-      msg->current_error);
+      goal_handle,
+      task_id,
+      state,
+      progress,
+      current_error);
     return;
   }
 
   // 终态：根据正式任务状态结束 action
-  if (msg->state == c::task_state::kCompleted) {
+  if (state == c::task_state::kCompleted) {
     finish_goal_success(
-      active_goal_ctx_.goal_handle,
-      active_goal_ctx_.task_id,
-      msg->message,
-      msg->current_error);
+      goal_handle,
+      task_id,
+      message,
+      current_error);
     return;
   }
 
-  if (msg->state == c::task_state::kCanceled) {
+  if (state == c::task_state::kCanceled) {
     finish_goal_cancel(
-      active_goal_ctx_.goal_handle,
-      active_goal_ctx_.task_id,
-      msg->message,
-      msg->current_error);
+      goal_handle,
+      task_id,
+      message,
+      current_error);
     return;
   }
 
-  if (msg->state == c::task_state::kFailed ||
-      msg->state == c::task_state::kRejected) {
+  if (state == c::task_state::kFailed ||
+      state == c::task_state::kRejected) {
     finish_goal_abort(
-      active_goal_ctx_.goal_handle,
-      active_goal_ctx_.task_id,
-      msg->message,
-      msg->current_error);
+      goal_handle,
+      task_id,
+      message,
+      current_error);
     return;
   }
 }
