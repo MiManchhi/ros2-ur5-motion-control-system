@@ -19,39 +19,37 @@ public:
   // ============================================================
   struct Config
   {
-    double goal_tolerance {0.01};          // 目标到位误差阈值
-    double execution_timeout_sec {15.0};   // 整体执行超时时间
-    double feedback_timeout_sec {1.0};     // joint_states 反馈超时时间
+    double goal_tolerance {0.01};            // 目标到位误差阈值
+    double execution_timeout_sec {15.0};     // 默认整体执行超时时间
+    double feedback_timeout_sec {1.0};       // joint_states 反馈超时时间
+    double min_publish_interval_sec {0.02};  // 最小控制命令发送节拍
   };
 
   // ============================================================
   // 单次执行上下文
-  // 用于保存当前正在执行的任务轨迹和执行进度
   // ============================================================
   struct ExecutionContext
   {
-    bool active {false};                               // 当前是否存在活动轨迹
+    bool active {false};                               // 当前是否有活动轨迹
     std::string task_id;                               // 当前任务 ID
     trajectory_msgs::msg::JointTrajectory trajectory;  // 当前执行轨迹
-    size_t current_point_index {0};                    // 当前已推进到的轨迹点索引
+    size_t current_point_index {0};                    // 当前推进到的轨迹点索引
     rclcpp::Time start_time;                           // 当前任务开始时间
+    double task_execution_timeout_sec {0.0};          // 本任务实际使用的超时阈值
   };
 
   // ============================================================
-  // 单个控制周期推进后的结果
-  // controller_node 会根据这个结果决定：
-  // 1. 是否发布 /joint_cmd
-  // 2. 是否宣布任务完成
-  // 3. 是否进入失败链路
+  // 单个控制周期推进结果
   // ============================================================
   struct StepResult
   {
-    bool need_publish_command {false};     // 当前周期是否需要发布控制命令
-    bool finished {false};                 // 当前任务是否完成
-    bool has_error {false};                // 当前是否出现错误
-    std::string message;                   // 状态描述信息
-    std::vector<std::string> joint_names;  // 待发布命令中的关节名
-    std::vector<double> positions;         // 待发布命令中的目标位置
+    bool need_publish_command {false};     // 是否需要发布 /joint_cmd
+    bool finished {false};                 // 是否执行完成
+    bool has_error {false};                // 是否出现错误
+    std::string message;                   // 当前状态描述
+    std::vector<std::string> joint_names;  // 待发布命令的关节名
+    std::vector<double> positions;         // 待发布命令的关节目标位置
+    double point_interval_sec {0.0};       // 本次命令建议的执行节拍
     double current_error {0.0};            // 当前误差
   };
 
@@ -59,14 +57,15 @@ public:
   TrajectoryExecutor() = default;
   ~TrajectoryExecutor() = default;
 
-  // 设置执行器配置参数
+  // 设置执行器配置
   void set_config(const Config & config);
 
-  // 启动一个新轨迹执行
+  // 启动轨迹执行
   bool start(
     const std::string & task_id,
     const trajectory_msgs::msg::JointTrajectory & trajectory,
     const rclcpp::Time & now,
+    double task_timeout_sec,
     std::string & error_msg);
 
   // 停止当前执行
@@ -77,10 +76,10 @@ public:
     const sensor_msgs::msg::JointState & joint_state,
     const rclcpp::Time & now);
 
-  // 在一个控制周期中推进执行
+  // 推进一步执行
   StepResult step(const rclcpp::Time & now);
 
-  // 查询当前是否有活动任务
+  // 查询是否有活动任务
   bool is_active() const;
 
   // 获取当前任务 ID
@@ -96,7 +95,7 @@ public:
   size_t total_points() const;
 
 private:
-  // 计算当前 joint_states 与目标关节位置之间的最大绝对误差
+  // 计算当前关节状态与目标点之间的最大绝对误差
   double compute_max_error(
     const std::vector<std::string> & joint_names,
     const std::vector<double> & target_positions) const;
@@ -108,12 +107,11 @@ private:
 
 private:
   Config config_;
-
   ExecutionContext exec_ctx_;
 
-  sensor_msgs::msg::JointState latest_joint_state_; // 最近一次 joint_states
-  bool has_joint_state_ {false};                    // 是否收到过 joint_states
-  rclcpp::Time last_joint_state_time_;              // 最近一次 joint_states 时间
+  sensor_msgs::msg::JointState latest_joint_state_;
+  bool has_joint_state_ {false};
+  rclcpp::Time last_joint_state_time_;
 };
 
 }  // namespace controller_pkg

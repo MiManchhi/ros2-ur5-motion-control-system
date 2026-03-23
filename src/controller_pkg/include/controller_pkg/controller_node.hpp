@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "controller_pkg/trajectory_executor.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 
@@ -11,8 +12,6 @@
 #include "robot_motion_msgs/msg/motion_event.hpp"
 #include "robot_motion_msgs/msg/planned_trajectory.hpp"
 #include "robot_motion_msgs/msg/task_state.hpp"
-
-#include "controller_pkg/trajectory_executor.hpp"
 
 namespace controller_pkg
 {
@@ -23,24 +22,25 @@ public:
   explicit ControllerNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
-  // 收到规划层输出的轨迹
+  // 接收规划层输出的轨迹
   void on_planned_trajectory(
     const robot_motion_msgs::msg::PlannedTrajectory::SharedPtr msg);
 
-  // 收到底层 joint_states
+  // 接收底层 joint_states
   void on_joint_state(const sensor_msgs::msg::JointState::SharedPtr msg);
 
-  // 收到正式任务状态
+  // 接收正式任务状态
   void on_task_state(const robot_motion_msgs::msg::TaskState::SharedPtr msg);
 
   // 控制定时器回调
   void on_control_timer();
 
-  // 发布内部关节控制命令
+  // 向接口层发布内部关节控制命令
   void publish_joint_command(
     const std::string & task_id,
     const std::vector<std::string> & joint_names,
-    const std::vector<double> & positions);
+    const std::vector<double> & positions,
+    double point_interval_sec);
 
   // 发布任务事件
   void publish_motion_event(
@@ -52,20 +52,20 @@ private:
     double current_error,
     bool is_error);
 
-  // 计算当前任务进度
+  // 根据当前执行进度估算任务进度
   float compute_progress() const;
 
 private:
   // 订阅规划轨迹
   rclcpp::Subscription<robot_motion_msgs::msg::PlannedTrajectory>::SharedPtr planned_traj_sub_;
 
-  // 订阅底层关节状态
+  // 订阅底层 joint_states
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
 
   // 订阅正式任务状态
   rclcpp::Subscription<robot_motion_msgs::msg::TaskState>::SharedPtr task_state_sub_;
 
-  // 发布控制命令
+  // 发布 /joint_cmd
   rclcpp::Publisher<robot_motion_msgs::msg::MotionCommand>::SharedPtr joint_cmd_pub_;
 
   // 发布任务事件

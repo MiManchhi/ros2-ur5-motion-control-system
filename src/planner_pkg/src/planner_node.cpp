@@ -12,9 +12,9 @@ namespace c = robot_common_pkg::constants;
 PlannerNode::PlannerNode(const rclcpp::NodeOptions & options)
 : Node("planner_node", options)
 {
-  // =========================
+  // ============================================================
   // 声明并读取参数
-  // =========================
+  // ============================================================
   this->declare_parameter<int>("traj_points", 50);
   this->declare_parameter<double>("plan_duration_sec", 5.0);
 
@@ -29,11 +29,11 @@ PlannerNode::PlannerNode(const rclcpp::NodeOptions & options)
     plan_duration_sec_ = 5.0;
   }
 
-  // =========================
+  // ============================================================
   // 创建订阅器
-  // =========================
+  // ============================================================
 
-  // 接收 motion_api_node 下发的内部运动任务
+  // 接收 motion_api 下发的内部运动命令
   motion_cmd_sub_ =
     this->create_subscription<robot_motion_msgs::msg::MotionCommand>(
       "/motion_command",
@@ -47,9 +47,9 @@ PlannerNode::PlannerNode(const rclcpp::NodeOptions & options)
       50,
       std::bind(&PlannerNode::on_joint_state, this, std::placeholders::_1));
 
-  // =========================
+  // ============================================================
   // 创建发布器
-  // =========================
+  // ============================================================
 
   // 向控制层发布规划轨迹
   planned_traj_pub_ =
@@ -57,7 +57,7 @@ PlannerNode::PlannerNode(const rclcpp::NodeOptions & options)
       "/planned_traj",
       10);
 
-  // 向 system_manager_node 发布任务事件
+  // 向 system_manager 发布任务事件
   motion_event_pub_ =
     this->create_publisher<robot_motion_msgs::msg::MotionEvent>(
       "/motion_event",
@@ -66,7 +66,7 @@ PlannerNode::PlannerNode(const rclcpp::NodeOptions & options)
   RCLCPP_INFO(this->get_logger(), "planner_node 已启动");
   RCLCPP_INFO(
     this->get_logger(),
-    "参数：traj_points=%d, plan_duration_sec=%.2f",
+    "启动参数：traj_points=%d，plan_duration_sec=%.2f",
     traj_points_,
     plan_duration_sec_);
 }
@@ -78,58 +78,60 @@ void PlannerNode::on_motion_command(
 
   RCLCPP_INFO(
     this->get_logger(),
-    "[task_id=%s] 收到 /motion_command，准备进行轨迹规划",
-    task_id.c_str());
+    "[task_id=%s] 收到 /motion_command，开始规划。joint_count=%zu，speed_scale=%.3f，timeout_sec=%.3f",
+    task_id.c_str(),
+    msg->joint_names.size(),
+    msg->speed_scale,
+    msg->timeout_sec);
 
-  // 先发布“开始规划”事件
+  // 先上报“开始规划”
   publish_motion_event(
     task_id,
     c::event::kPlanningStarted,
     c::task_state::kPlanning,
-    "开始轨迹规划",
+    "规划层已收到运动命令，开始生成轨迹",
     0.10F,
     0.0,
     false);
 
-  // 当前还没有 joint_states，无法规划
+  // 没有 joint_states 无法规划
   if (!has_joint_state_) {
     RCLCPP_ERROR(
       this->get_logger(),
-      "[task_id=%s] 尚未收到 /joint_states，无法规划",
+      "[task_id=%s] 当前尚未收到 /joint_states，无法规划轨迹",
       task_id.c_str());
 
     publish_motion_event(
       task_id,
       c::event::kPlanningFailed,
       c::task_state::kFailed,
-      "尚未收到 /joint_states，无法规划",
+      "尚未收到 /joint_states，规划失败",
       0.10F,
       0.0,
       true);
     return;
   }
 
-  // 从 joint_states 中提取当前关节位置，顺序与目标关节保持一致
+  // 从 joint_states 中提取与目标关节同顺序的当前位置
   std::vector<double> current_positions;
   if (!extract_current_positions(msg->joint_names, latest_joint_state_, current_positions)) {
     RCLCPP_ERROR(
       this->get_logger(),
-      "[task_id=%s] 无法根据目标关节顺序提取当前位置",
+      "[task_id=%s] 无法按照目标关节顺序提取当前位置，规划失败",
       task_id.c_str());
 
     publish_motion_event(
       task_id,
       c::event::kPlanningFailed,
       c::task_state::kFailed,
-      "无法根据目标关节顺序提取当前位置",
+      "无法按目标关节顺序提取当前位置",
       0.10F,
       0.0,
       true);
     return;
   }
 
-  // 先将规划参数写入规划器内部
-  // 当前 SimpleJointPlanner 使用类内部参数 traj_points_ / plan_duration_sec_
+  // 将节点参数写入规划器
   planner_.set_traj_points(traj_points_);
   planner_.set_plan_duration(plan_duration_sec_);
 
@@ -140,10 +142,9 @@ void PlannerNode::on_motion_command(
   request.current_positions = current_positions;
   request.target_positions = msg->positions;
 
-  // 当前 MotionCommand 里还没有 speed_scale / timeout_sec 透传字段
-  // 这里先采用默认值占位，后续可按需要扩展 msg 定义
-  request.speed_scale = 1.0;
-  request.timeout_sec = 0.0;
+  // 这次优化后，speed_scale / timeout_sec 已真正从 MotionCommand 下传
+  request.speed_scale = msg->speed_scale;
+  request.timeout_sec = msg->timeout_sec;
 
   // 调用规划器
   const auto result = planner_.plan(request);
@@ -166,16 +167,18 @@ void PlannerNode::on_motion_command(
     return;
   }
 
-  // 发布规划结果
-  publish_planned_trajectory(task_id, result.trajectory);
+  // 发布规划结果到控制层
+  publish_planned_trajectory(task_id, result.trajectory, msg->timeout_sec);
 
   RCLCPP_INFO(
     this->get_logger(),
-    "[task_id=%s] 轨迹规划成功，轨迹点数=%zu",
+    "[task_id=%s] 轨迹规划成功：point_count=%zu，actual_duration=%.3f sec，point_interval=%.3f sec，speed_scale=%.3f",
     task_id.c_str(),
-    result.trajectory.points.size());
+    result.trajectory.points.size(),
+    result.actual_plan_duration_sec,
+    result.point_interval_sec,
+    request.speed_scale);
 
-  // 发布“规划完成”事件
   publish_motion_event(
     task_id,
     c::event::kPlanningDone,
@@ -197,12 +200,12 @@ bool PlannerNode::extract_current_positions(
   const sensor_msgs::msg::JointState & joint_state,
   std::vector<double> & reordered_positions) const
 {
-  // joint_state.name 和 joint_state.position 数量不一致，数据非法
+  // joint_state.name 与 joint_state.position 数量不一致，数据非法
   if (joint_state.name.size() != joint_state.position.size()) {
     return false;
   }
 
-  // 构造 name -> position 的映射
+  // 构造 name -> position 映射
   std::unordered_map<std::string, double> joint_map;
   joint_map.reserve(joint_state.name.size());
 
@@ -227,20 +230,23 @@ bool PlannerNode::extract_current_positions(
 
 void PlannerNode::publish_planned_trajectory(
   const std::string & task_id,
-  const trajectory_msgs::msg::JointTrajectory & trajectory)
+  const trajectory_msgs::msg::JointTrajectory & trajectory,
+  double timeout_sec)
 {
   robot_motion_msgs::msg::PlannedTrajectory msg;
   msg.task_id = task_id;
   msg.trajectory = trajectory;
+  msg.timeout_sec = timeout_sec;
   msg.stamp = this->now();
 
   planned_traj_pub_->publish(msg);
 
   RCLCPP_INFO(
     this->get_logger(),
-    "[task_id=%s] 已发布 /planned_traj，轨迹点数=%zu",
+    "[task_id=%s] 已发布 /planned_traj：point_count=%zu，timeout_sec=%.3f",
     task_id.c_str(),
-    trajectory.points.size());
+    trajectory.points.size(),
+    timeout_sec);
 }
 
 void PlannerNode::publish_motion_event(
@@ -267,7 +273,7 @@ void PlannerNode::publish_motion_event(
 
   RCLCPP_INFO(
     this->get_logger(),
-    "[motion_event] task_id=%s, module=%s, event=%s, related_state=%s, progress=%.3f, error=%.6f, is_error=%s, detail=%s",
+    "[motion_event] task_id=%s，module=%s，event=%s，related_state=%s，progress=%.3f，error=%.6f，is_error=%s，detail=%s",
     task_id.c_str(),
     c::module::kPlanner,
     event_name.c_str(),

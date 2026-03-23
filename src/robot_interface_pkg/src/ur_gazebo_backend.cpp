@@ -24,42 +24,50 @@ bool UrGazeboBackend::convert_command(
   trajectory_msgs::msg::JointTrajectory & traj,
   std::string & error_msg) const
 {
-  // =========================
+  // ============================================================
   // 输入校验
-  // =========================
+  // ============================================================
   if (cmd.task_id.empty()) {
-    error_msg = "task_id 为空";
+    error_msg = "task_id 为空，无法下发到底层控制器";
     return false;
   }
 
   if (cmd.joint_names.empty()) {
-    error_msg = "joint_names 为空";
+    error_msg = "joint_names 为空，无法下发到底层控制器";
     return false;
   }
 
   if (cmd.positions.empty()) {
-    error_msg = "positions 为空";
+    error_msg = "positions 为空，无法下发到底层控制器";
     return false;
   }
 
   if (cmd.joint_names.size() != cmd.positions.size()) {
-    error_msg = "joint_names 与 positions 数量不一致";
+    error_msg = "joint_names 与 positions 数量不一致，无法下发";
     return false;
   }
 
-  // =========================
-  // 转换为标准 JointTrajectory
-  // 这里采用“单点轨迹命令”的方式下发到底层控制器
-  // =========================
+  // ============================================================
+  // 转换为底层标准 JointTrajectory
+  //
+  // 当前采用“单点轨迹命令”方式下发到底层控制器。
+  // 本次优化点：
+  // 优先使用控制层传下来的 point_interval_sec；
+  // 若未传有效值，再退回配置里的 point_time_from_start_sec。
+  // ============================================================
   traj.joint_names = cmd.joint_names;
   traj.points.clear();
   traj.points.reserve(1);
 
   trajectory_msgs::msg::JointTrajectoryPoint point;
   point.positions = cmd.positions;
-  point.time_from_start = rclcpp::Duration::from_seconds(
-    config_.point_time_from_start_sec);
 
+  double point_time_sec = cmd.point_interval_sec;
+  if (point_time_sec <= 0.0) {
+    point_time_sec = config_.point_time_from_start_sec;
+  }
+
+  point.time_from_start = rclcpp::Duration::from_seconds(point_time_sec);
   traj.points.push_back(point);
 
   return true;

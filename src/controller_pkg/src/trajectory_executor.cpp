@@ -7,11 +7,25 @@
 namespace controller_pkg
 {
 
+namespace
+{
+
+// 将 ROS2 Duration 消息转换为 double 秒
+double duration_msg_to_sec(const builtin_interfaces::msg::Duration & duration)
+{
+  return static_cast<double>(duration.sec) +
+         static_cast<double>(duration.nanosec) * 1e-9;
+}
+
+}  // namespace
+
 void TrajectoryExecutor::set_config(const Config & config)
 {
   config_ = config;
 
-  // 对非法参数做兜底保护
+  // ============================================================
+  // 对非法参数做保护
+  // ============================================================
   if (config_.goal_tolerance <= 0.0) {
     config_.goal_tolerance = 0.01;
   }
@@ -21,29 +35,33 @@ void TrajectoryExecutor::set_config(const Config & config)
   if (config_.feedback_timeout_sec <= 0.0) {
     config_.feedback_timeout_sec = 1.0;
   }
+  if (config_.min_publish_interval_sec <= 0.0) {
+    config_.min_publish_interval_sec = 0.02;
+  }
 }
 
 bool TrajectoryExecutor::start(
   const std::string & task_id,
   const trajectory_msgs::msg::JointTrajectory & trajectory,
   const rclcpp::Time & now,
+  double task_timeout_sec,
   std::string & error_msg)
 {
   // 当前已有活动轨迹，不允许重复启动
   if (exec_ctx_.active) {
-    error_msg = "执行器当前忙碌";
+    error_msg = "执行器当前忙碌，无法启动新轨迹";
     return false;
   }
 
   // task_id 不能为空
   if (task_id.empty()) {
-    error_msg = "task_id 为空";
+    error_msg = "task_id 为空，无法启动执行";
     return false;
   }
 
-  // 轨迹必须有 joint_names 且至少包含一个轨迹点
+  // 轨迹不能为空
   if (trajectory.joint_names.empty() || trajectory.points.empty()) {
-    error_msg = "轨迹为空";
+    error_msg = "轨迹为空，无法启动执行";
     return false;
   }
 
@@ -54,17 +72,21 @@ bool TrajectoryExecutor::start(
   exec_ctx_.current_point_index = 0;
   exec_ctx_.start_time = now;
 
+  // 优先使用任务级超时，否则回退到配置默认值
+  exec_ctx_.task_execution_timeout_sec =
+    (task_timeout_sec > 0.0) ? task_timeout_sec : config_.execution_timeout_sec;
+
   return true;
 }
 
 void TrajectoryExecutor::stop()
 {
-  // 清空执行上下文
   exec_ctx_.active = false;
   exec_ctx_.task_id.clear();
   exec_ctx_.trajectory.joint_names.clear();
   exec_ctx_.trajectory.points.clear();
   exec_ctx_.current_point_index = 0;
+  exec_ctx_.task_execution_timeout_sec = 0.0;
 }
 
 void TrajectoryExecutor::update_joint_state(
@@ -80,62 +102,87 @@ TrajectoryExecutor::StepResult TrajectoryExecutor::step(const rclcpp::Time & now
 {
   StepResult result;
 
-  // 当前无活动任务
+  // ============================================================
+  // 基础状态检查
+  // ============================================================
   if (!exec_ctx_.active) {
     result.message = "当前无活动任务";
     return result;
   }
 
-  // 尚未收到 joint_states，无法进行闭环判断
   if (!has_joint_state_) {
     result.has_error = true;
-    result.message = "尚未收到 joint_states";
+    result.message = "尚未收到 joint_states，无法执行闭环控制";
     return result;
   }
 
-  // joint_states 超时
+  // joint_states 反馈超时
   const double feedback_elapsed = (now - last_joint_state_time_).seconds();
   if (feedback_elapsed > config_.feedback_timeout_sec) {
     result.has_error = true;
-    result.message = "joint_states 反馈超时";
+    result.message = "joint_states 反馈超时，停止执行";
     return result;
   }
 
-  // 整体执行超时
+  // 当前任务执行超时
   const double exec_elapsed = (now - exec_ctx_.start_time).seconds();
-  if (exec_elapsed > config_.execution_timeout_sec) {
+  if (exec_elapsed > exec_ctx_.task_execution_timeout_sec) {
     result.has_error = true;
-    result.message = "轨迹执行超时";
+    result.message = "轨迹执行超时，停止执行";
     return result;
   }
 
-  // 如果还有轨迹点未发送，则当前周期发送一个点
+  // ============================================================
+  // 若还有轨迹点未发送，则当前周期发送一个点
+  // ============================================================
   if (exec_ctx_.current_point_index < exec_ctx_.trajectory.points.size()) {
     const auto & point = exec_ctx_.trajectory.points[exec_ctx_.current_point_index];
+
+    // 从轨迹时间中推导当前点的建议执行节拍
+    double point_interval_sec = config_.min_publish_interval_sec;
+
+    if (exec_ctx_.current_point_index == 0U) {
+      // 第一个点通常 time_from_start=0，此时退回最小发送间隔
+      const double first_time_sec = duration_msg_to_sec(point.time_from_start);
+      if (first_time_sec > 0.0) {
+        point_interval_sec = first_time_sec;
+      }
+    } else {
+      const auto & prev_point = exec_ctx_.trajectory.points[exec_ctx_.current_point_index - 1U];
+      const double curr_sec = duration_msg_to_sec(point.time_from_start);
+      const double prev_sec = duration_msg_to_sec(prev_point.time_from_start);
+      const double diff_sec = curr_sec - prev_sec;
+      if (diff_sec > 0.0) {
+        point_interval_sec = diff_sec;
+      }
+    }
 
     result.need_publish_command = true;
     result.joint_names = exec_ctx_.trajectory.joint_names;
     result.positions = point.positions;
-    result.message = "发送轨迹点";
+    result.point_interval_sec = point_interval_sec;
+    result.message = "发送下一个轨迹点";
 
     // 推进轨迹点索引
     ++exec_ctx_.current_point_index;
     return result;
   }
 
-  // 所有轨迹点都已经发送完，此时开始判断最终是否到位
+  // ============================================================
+  // 所有轨迹点都已发送，开始判断最终是否到位
+  // ============================================================
   const auto & final_point = exec_ctx_.trajectory.points.back();
   result.current_error =
     compute_max_error(exec_ctx_.trajectory.joint_names, final_point.positions);
 
   if (is_goal_reached(exec_ctx_.trajectory.joint_names, final_point.positions)) {
     result.finished = true;
-    result.message = "轨迹执行完成，已到达目标位置";
+    result.message = "轨迹点全部发送完毕，机械臂已到达目标位置";
     return result;
   }
 
-  // 轨迹点已经发完，但机械臂还没有完全到位
-  result.message = "轨迹点已全部发送，等待到位";
+  // 点发完了，但还没到位
+  result.message = "轨迹点已全部发送，当前仍在等待机械臂到位";
   return result;
 }
 
@@ -151,12 +198,11 @@ const std::string & TrajectoryExecutor::active_task_id() const
 
 double TrajectoryExecutor::current_error() const
 {
-  // 当前无活动任务或轨迹为空时，误差记为 0
   if (!exec_ctx_.active || exec_ctx_.trajectory.points.empty()) {
     return 0.0;
   }
 
-  // 当前误差以最终目标点为基准
+  // 当前误差按最终目标点计算
   const auto & final_point = exec_ctx_.trajectory.points.back();
   return compute_max_error(exec_ctx_.trajectory.joint_names, final_point.positions);
 }
@@ -185,12 +231,12 @@ double TrajectoryExecutor::compute_max_error(
     return std::numeric_limits<double>::infinity();
   }
 
-  // joint_state 数据异常
+  // joint_state 数据非法
   if (latest_joint_state_.name.size() != latest_joint_state_.position.size()) {
     return std::numeric_limits<double>::infinity();
   }
 
-  // 构造当前 joint_states 的 name -> position 映射
+  // 构造 name -> position 映射
   std::unordered_map<std::string, double> joint_map;
   joint_map.reserve(latest_joint_state_.name.size());
 
