@@ -85,6 +85,9 @@ public:
   // 获取当前任务 ID
   const std::string & active_task_id() const;
 
+  // 获取当前任务 ID（active_task_id 的兼容别名）
+  const std::string & get_active_task_id() const;
+
   // 获取当前误差（相对于最终目标点）
   double current_error() const;
 

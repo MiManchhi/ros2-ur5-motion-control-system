@@ -196,6 +196,11 @@ const std::string & TrajectoryExecutor::active_task_id() const
   return exec_ctx_.task_id;
 }
 
+const std::string & TrajectoryExecutor::get_active_task_id() const
+{
+  return active_task_id();
+}
+
 double TrajectoryExecutor::current_error() const
 {
   if (!exec_ctx_.active || exec_ctx_.trajectory.points.empty()) {
