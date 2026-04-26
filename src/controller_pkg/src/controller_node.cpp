@@ -141,28 +141,39 @@ void ControllerNode::on_joint_state(const sensor_msgs::msg::JointState::SharedPt
 
 void ControllerNode::on_task_state(const robot_motion_msgs::msg::TaskState::SharedPtr msg)
 {
-  // 当前没有活动任务，无需处理
   if (!executor_.is_active()) {
     return;
   }
 
   // 只响应当前活动任务
-  if (msg->task_id != executor_.active_task_id()) {
+  if (msg->task_id != executor_.get_active_task_id()) {
     return;
   }
 
-  // 如果正式任务状态已经进入终止态，则本地执行器也应停止
-  if (msg->state == c::task_state::kCanceled ||
-      msg->state == c::task_state::kFailed ||
-      msg->state == c::task_state::kRejected) {
+  // cancel / failed 需要触发本地执行器闭环停止
+  if (msg->state == c::task_state::kCanceled || msg->state == c::task_state::kFailed) {
+    const std::string task_id = msg->task_id;
+
     RCLCPP_WARN(
       this->get_logger(),
-      "[task_id=%s] 收到终止性正式任务状态 state=%s，停止当前控制执行",
-      msg->task_id.c_str(),
+      "[task_id=%s] 收到 /task_state=%s，停止执行器并清空控制上下文",
+      task_id.c_str(),
       msg->state.c_str());
 
+    const float progress = compute_progress();
+    const double current_error = executor_.current_error();
+
+    // stop() 会清空执行上下文，避免控制定时器继续发布 /joint_cmd
     executor_.stop();
-    return;
+
+    publish_motion_event(
+      task_id,
+      c::event::kExecutionDone,
+      msg->state,
+      "收到canceled/failed，执行器已停止",
+      progress,
+      current_error,
+      false);
   }
 }
 
