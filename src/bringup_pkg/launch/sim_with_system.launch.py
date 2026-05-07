@@ -36,6 +36,9 @@ def _launch_setup(context, *args, **kwargs):
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     log_level = LaunchConfiguration('log_level')
+    sim_ur_type = LaunchConfiguration('sim_ur_type')
+    launch_rviz = LaunchConfiguration('launch_rviz')
+    gazebo_gui = LaunchConfiguration('gazebo_gui')
 
     system_only_include = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(system_only_launch),
@@ -70,7 +73,12 @@ def _launch_setup(context, *args, **kwargs):
     # 再延迟 3 秒启动系统节点，给底层控制器和 /joint_states 一点准备时间。
     # --------------------------------------------------
     sim_include = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(sim_launch_file_raw)
+        PythonLaunchDescriptionSource(sim_launch_file_raw),
+        launch_arguments={
+            'ur_type': sim_ur_type,
+            'launch_rviz': launch_rviz,
+            'gazebo_gui': gazebo_gui,
+        }.items()
     )
 
     delayed_system = TimerAction(
@@ -107,6 +115,21 @@ def generate_launch_description():
             'sim_launch_file',
             default_value='',
             description='外部仿真 launch 文件完整路径'
+        ),
+        DeclareLaunchArgument(
+            'sim_ur_type',
+            default_value='ur5',
+            description='外部 UR Gazebo 仿真的机器人型号'
+        ),
+        DeclareLaunchArgument(
+            'launch_rviz',
+            default_value='true',
+            description='启动外部仿真自带 RViz'
+        ),
+        DeclareLaunchArgument(
+            'gazebo_gui',
+            default_value='true',
+            description='启动 Gazebo 图形客户端'
         ),
         OpaqueFunction(function=_launch_setup)
     ])

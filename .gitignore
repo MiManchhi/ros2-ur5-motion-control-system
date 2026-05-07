@@ -19,6 +19,7 @@ build_isolated/
 devel_isolated/
 .vscode/
 .cache/
+.codex
 
 compile_commands.json
 

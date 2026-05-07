@@ -42,6 +42,11 @@ SystemManagerNode::SystemManagerNode(const rclcpp::NodeOptions & options)
       50,
       std::bind(&SystemManagerNode::on_motion_event, this, std::placeholders::_1));
 
+  motion_event_pub_ =
+    this->create_publisher<robot_motion_msgs::msg::MotionEvent>(
+      "/motion_event",
+      20);
+
   task_state_pub_ =
     this->create_publisher<robot_motion_msgs::msg::TaskState>(
       "/task_state",
@@ -96,6 +101,15 @@ void SystemManagerNode::on_reset_system(
     active_task_ctx_.active ? active_task_ctx_.task_id : "",
     c::system_state::kResetting,
     "系统正在重置",
+    false);
+
+  publish_motion_event(
+    "",
+    c::event::kSystemReset,
+    "",
+    "系统重置，所有执行器应立即停止",
+    active_task_ctx_.active ? active_task_ctx_.progress : 0.0F,
+    active_task_ctx_.active ? active_task_ctx_.current_error : 0.0,
     false);
 
   // 如果当前存在活动任务，需要先收口该任务
@@ -475,6 +489,41 @@ void SystemManagerNode::publish_system_state(
     state.c_str(),
     is_error ? "true" : "false",
     message.c_str());
+}
+
+void SystemManagerNode::publish_motion_event(
+  const std::string & task_id,
+  const std::string & event_name,
+  const std::string & related_state,
+  const std::string & detail,
+  float progress,
+  double current_error,
+  bool is_error)
+{
+  robot_motion_msgs::msg::MotionEvent msg;
+  msg.task_id = task_id;
+  msg.module_name = c::module::kSystemManager;
+  msg.event_name = event_name;
+  msg.related_state = related_state;
+  msg.detail = detail;
+  msg.progress = progress;
+  msg.current_error = current_error;
+  msg.is_error = is_error;
+  msg.stamp = this->now();
+
+  motion_event_pub_->publish(msg);
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[motion_event] task_id=%s, module=%s, event=%s, related_state=%s, progress=%.3f, error=%.6f, is_error=%s, detail=%s",
+    task_id.c_str(),
+    c::module::kSystemManager,
+    event_name.c_str(),
+    related_state.c_str(),
+    progress,
+    current_error,
+    is_error ? "true" : "false",
+    detail.c_str());
 }
 
 void SystemManagerNode::refresh_system_state()

@@ -62,6 +62,13 @@ ControllerNode::ControllerNode(const rclcpp::NodeOptions & options)
       20,
       std::bind(&ControllerNode::on_task_state, this, std::placeholders::_1));
 
+  // 接收系统级 reset 事件
+  motion_event_sub_ =
+    this->create_subscription<robot_motion_msgs::msg::MotionEvent>(
+      "/motion_event",
+      20,
+      std::bind(&ControllerNode::on_motion_event, this, std::placeholders::_1));
+
   // ============================================================
   // 创建发布器
   // ============================================================
@@ -145,6 +152,32 @@ void ControllerNode::on_task_state(const robot_motion_msgs::msg::TaskState::Shar
     return;
   }
 
+  if (msg->task_id.empty() &&
+      (msg->state == c::task_state::kCanceled || msg->state == c::task_state::kFailed)) {
+    const std::string task_id = executor_.get_active_task_id();
+
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[task_id=%s] 收到空 task_id 的 /task_state=%s，停止执行器并清空控制上下文",
+      task_id.c_str(),
+      msg->state.c_str());
+
+    const float progress = compute_progress();
+    const double current_error = executor_.current_error();
+
+    executor_.stop();
+
+    publish_motion_event(
+      task_id,
+      c::event::kExecutionDone,
+      msg->state,
+      "收到全局canceled/failed，执行器已停止",
+      progress,
+      current_error,
+      false);
+    return;
+  }
+
   // 只响应当前活动任务
   if (msg->task_id != executor_.get_active_task_id()) {
     return;
@@ -177,6 +210,37 @@ void ControllerNode::on_task_state(const robot_motion_msgs::msg::TaskState::Shar
   }
 }
 
+void ControllerNode::on_motion_event(const robot_motion_msgs::msg::MotionEvent::SharedPtr msg)
+{
+  if (msg->event_name != c::event::kSystemReset) {
+    return;
+  }
+
+  if (!executor_.is_active()) {
+    return;
+  }
+
+  const std::string task_id = executor_.get_active_task_id();
+  const float progress = compute_progress();
+  const double current_error = executor_.current_error();
+
+  RCLCPP_WARN(
+    this->get_logger(),
+    "[task_id=%s] 收到 system_reset 事件，停止执行器并清空控制上下文",
+    task_id.c_str());
+
+  executor_.stop();
+
+  publish_motion_event(
+    task_id,
+    c::event::kExecutionDone,
+    c::task_state::kFailed,
+    "收到system_reset，执行器已停止",
+    progress,
+    current_error,
+    false);
+}
+
 void ControllerNode::on_control_timer()
 {
   if (!executor_.is_active()) {
@@ -201,7 +265,7 @@ void ControllerNode::on_control_timer()
       c::event::kExecutionFailed,
       c::task_state::kFailed,
       result.message,
-      compute_progress(),
+      result.progress,
       result.current_error,
       true);
 
@@ -218,6 +282,15 @@ void ControllerNode::on_control_timer()
       result.joint_names,
       result.positions,
       result.point_interval_sec);
+
+    publish_motion_event(
+      task_id,
+      c::event::kExecutionStarted,
+      c::task_state::kExecuting,
+      result.message,
+      result.progress,
+      result.current_error,
+      false);
     return;
   }
 
@@ -254,7 +327,16 @@ void ControllerNode::on_control_timer()
       task_id.c_str(),
       result.message.c_str(),
       result.current_error,
-      compute_progress());
+      result.progress);
+
+    publish_motion_event(
+      task_id,
+      c::event::kExecutionStarted,
+      c::task_state::kExecuting,
+      result.message,
+      result.progress,
+      result.current_error,
+      false);
   }
 }
 

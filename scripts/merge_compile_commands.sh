@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 WORKSPACE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUTPUT_FILE="$WORKSPACE_DIR/compile_commands.json"
@@ -7,7 +7,7 @@ OUTPUT_FILE="$WORKSPACE_DIR/compile_commands.json"
 echo "[" > "$OUTPUT_FILE"
 
 first=1
-find "$WORKSPACE_DIR/build" -name compile_commands.json | while read -r file; do
+while IFS= read -r file; do
   if [ ! -f "$file" ]; then
     continue
   fi
@@ -23,7 +23,7 @@ find "$WORKSPACE_DIR/build" -name compile_commands.json | while read -r file; do
     echo "$content" >> "$OUTPUT_FILE"
     first=0
   fi
-done
+done < <(find "$WORKSPACE_DIR/build" -name compile_commands.json | sort)
 
 echo "]" >> "$OUTPUT_FILE"
 echo "Merged compile_commands.json generated at: $OUTPUT_FILE"

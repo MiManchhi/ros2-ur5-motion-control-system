@@ -32,6 +32,9 @@ private:
   // 接收正式任务状态
   void on_task_state(const robot_motion_msgs::msg::TaskState::SharedPtr msg);
 
+  // 接收系统级事件
+  void on_motion_event(const robot_motion_msgs::msg::MotionEvent::SharedPtr msg);
+
   // 控制定时器回调
   void on_control_timer();
 
@@ -64,6 +67,9 @@ private:
 
   // 订阅正式任务状态
   rclcpp::Subscription<robot_motion_msgs::msg::TaskState>::SharedPtr task_state_sub_;
+
+  // 订阅系统级事件
+  rclcpp::Subscription<robot_motion_msgs::msg::MotionEvent>::SharedPtr motion_event_sub_;
 
   // 发布 /joint_cmd
   rclcpp::Publisher<robot_motion_msgs::msg::MotionCommand>::SharedPtr joint_cmd_pub_;

@@ -50,6 +50,7 @@ public:
     std::vector<std::string> joint_names;  // 待发布命令的关节名
     std::vector<double> positions;         // 待发布命令的关节目标位置
     double point_interval_sec {0.0};       // 本次命令建议的执行节拍
+    float progress {0.0F};                 // 当前执行进度
     double current_error {0.0};            // 当前误差
   };
 
@@ -98,6 +99,9 @@ public:
   size_t total_points() const;
 
 private:
+  // 根据当前执行进度估算任务进度
+  float compute_progress() const;
+
   // 计算当前关节状态与目标点之间的最大绝对误差
   double compute_max_error(
     const std::vector<std::string> & joint_names,

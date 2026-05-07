@@ -110,6 +110,9 @@ TrajectoryExecutor::StepResult TrajectoryExecutor::step(const rclcpp::Time & now
     return result;
   }
 
+  result.progress = compute_progress();
+  result.current_error = current_error();
+
   if (!has_joint_state_) {
     result.has_error = true;
     result.message = "尚未收到 joint_states，无法执行闭环控制";
@@ -165,6 +168,8 @@ TrajectoryExecutor::StepResult TrajectoryExecutor::step(const rclcpp::Time & now
 
     // 推进轨迹点索引
     ++exec_ctx_.current_point_index;
+    result.progress = compute_progress();
+    result.current_error = current_error();
     return result;
   }
 
@@ -220,6 +225,34 @@ size_t TrajectoryExecutor::current_point_index() const
 size_t TrajectoryExecutor::total_points() const
 {
   return exec_ctx_.trajectory.points.size();
+}
+
+float TrajectoryExecutor::compute_progress() const
+{
+  if (!exec_ctx_.active) {
+    return 0.0F;
+  }
+
+  const size_t total_points = exec_ctx_.trajectory.points.size();
+  if (total_points == 0U) {
+    return 0.0F;
+  }
+
+  // 控制层进度大致映射到 0.30 ~ 0.95，最终完成由 controller_node 发布 1.0。
+  const double ratio =
+    static_cast<double>(exec_ctx_.current_point_index) /
+    static_cast<double>(total_points);
+
+  double progress = 0.30 + ratio * 0.65;
+
+  if (progress < 0.30) {
+    progress = 0.30;
+  }
+  if (progress > 0.95) {
+    progress = 0.95;
+  }
+
+  return static_cast<float>(progress);
 }
 
 double TrajectoryExecutor::compute_max_error(

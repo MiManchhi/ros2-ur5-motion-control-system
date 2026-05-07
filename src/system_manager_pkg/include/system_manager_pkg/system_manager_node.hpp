@@ -100,12 +100,25 @@ private:
     const std::string & message,
     bool is_error);
 
+  // 发布系统级事件
+  void publish_motion_event(
+    const std::string & task_id,
+    const std::string & event_name,
+    const std::string & related_state,
+    const std::string & detail,
+    float progress,
+    double current_error,
+    bool is_error);
+
   // 根据当前活动任务情况派生系统状态
   void refresh_system_state();
 
 private:
   // 订阅任务事件
   rclcpp::Subscription<robot_motion_msgs::msg::MotionEvent>::SharedPtr motion_event_sub_;
+
+  // 发布系统级事件
+  rclcpp::Publisher<robot_motion_msgs::msg::MotionEvent>::SharedPtr motion_event_pub_;
 
   // 发布正式任务状态
   rclcpp::Publisher<robot_motion_msgs::msg::TaskState>::SharedPtr task_state_pub_;
