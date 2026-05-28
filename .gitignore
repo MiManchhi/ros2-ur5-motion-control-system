@@ -1,8 +1,17 @@
+# ROS/colcon generated outputs
 devel/
 logs/
 build/
 install/
 log/
+build_isolated/
+devel_isolated/
+
+# Experiment data
+bags/
+*.bag
+*.db3
+
 bin/
 lib/
 msg_gen/
@@ -15,8 +24,6 @@ msg/*Feedback.msg
 msg/*Goal.msg
 msg/*Result.msg
 msg/_*.py
-build_isolated/
-devel_isolated/
 .vscode/
 .cache/
 .codex
