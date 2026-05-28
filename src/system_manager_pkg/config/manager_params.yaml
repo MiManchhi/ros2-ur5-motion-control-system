@@ -1,5 +1,5 @@
 system_manager_node:
   ros__parameters:
-    system_state_topic: "/system_state"
-    motion_event_topic: "/motion_event"
-    reset_service_name: "/reset_system"
+    task_timeout_sec: 20.0
+    watchdog_rate_hz: 2.0
+    auto_reset_on_failure: true

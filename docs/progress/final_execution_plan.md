@@ -153,9 +153,9 @@ source install/setup.bash
 
 重点说明：
 
-- `speed_scale` 当前主要在规划阶段生效，用于调整轨迹总时长。
+- `speed_scale` 当前通过规划轨迹总时长和控制层 `time_from_start` 调度节奏生效。
 - `timeout_sec` 会从 Action Goal 下传到规划和控制阶段，控制层据此进行执行超时判断。
-- manager 还有 `task_timeout_sec`，用于任务整体生命周期 watchdog。
+- manager 还有 `task_timeout_sec`，用于活动任务事件停滞 watchdog，不覆盖慢速任务的合法执行时间。
 - 控制层有 `feedback_timeout_sec`，用于判断 `/joint_states` 是否中断。
 - `goal_tolerance` 用于最终到位判定，当前按最大关节误差判断。
 

@@ -132,7 +132,7 @@ private:
   // watchdog 定时器
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
 
-  // 参数：整体任务超时时间
+  // 参数：活动任务事件停滞超时时间
   double task_timeout_sec_ {20.0};
 
   // 参数：watchdog 检查频率

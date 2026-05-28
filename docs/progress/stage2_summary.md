@@ -54,7 +54,7 @@
 
 `controller_pkg` 当前实现了：
 
-- **固定频率执行**：按 `control_rate_hz` 定时驱动 `step()`；
+- **按轨迹时间戳执行**：按 `control_rate_hz` 定时驱动 `step()`，但只有到达规划轨迹 `time_from_start` 对应节拍时才发布下一个控制点；
 - **反馈超时判定**：`joint_states` 长时间未更新则报错失败；
 - **执行超时判定**：任务执行超时则报错失败；
 - **误差判定**：按目标点最大关节误差与 `goal_tolerance` 判定到位；
@@ -91,7 +91,7 @@ planner/controller 消费 joint_states 作为反馈
 
 1. `task_id` 在入口生成并贯穿主链路与状态链路。
 2. `speed_scale`、`timeout_sec` 从 Action Goal 经 `motion_api` 下传到规划/控制阶段。
-3. 控制层按轨迹节拍推导 `point_interval_sec`，接口层据此适配单点命令。
+3. 控制层按轨迹 `time_from_start` 等待发布控制点，并推导 `point_interval_sec` 供接口层适配单点命令。
 
 ---
 
@@ -111,7 +111,7 @@ system_manager_node
 2. `system_manager_node` 使用任务状态机校验合法流转，拒绝非法跳转。
 3. `/task_state` 对外提供任务正式状态与终态判定。
 4. `/system_state` 对外提供系统级状态（`init/idle/busy/resetting/error`）。
-5. watchdog 基于活动任务总耗时执行超时收敛，并按参数决定恢复到 `idle` 或进入 `error`。
+5. watchdog 基于活动任务事件停滞时间做兜底收敛，并按参数决定恢复到 `idle` 或进入 `error`。
 
 ---
 
@@ -119,13 +119,14 @@ system_manager_node
 
 以下为当前代码中“已暴露、但尚未完全收敛”的事项：
 
-1. **`speed_scale` 的端到端语义仍需进一步统一。**
+1. **`speed_scale` 语义已统一到“规划时长 + 控制节拍”。**
    - 当前代码已在规划器中真实生效；
-   - 但控制层到接口层阶段不再继续使用 `speed_scale`（该阶段主要使用 `point_interval_sec`）。
+   - 控制层按规划轨迹时间戳等待发布控制点；
+   - 接口层仍使用 `point_interval_sec` 适配单点 JointTrajectory，不把 `speed_scale` 解释为底层控制器速度百分比。
 
-2. **`timeout_sec` 语义存在多层超时并行，需进一步明确口径。**
-   - 当前至少存在入口层等待超时、控制执行超时、manager 任务整体超时三层机制；
-   - 三者边界与优先级在代码中可运行，但文档层面仍需统一术语与推荐配置策略。
+2. **`timeout_sec` 口径已进一步明确。**
+   - Action Goal 的 `timeout_sec` 作为任务级执行超时下传给控制层；
+   - manager watchdog 当前用于任务事件停滞兜底，不再覆盖慢速任务的合法执行时间。
 
 3. **反馈过程仍可增强。**
    - 当前 Action Feedback 主要由 `/task_state` 驱动，已具备进度与误差字段；

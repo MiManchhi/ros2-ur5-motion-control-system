@@ -44,11 +44,12 @@ system_manager_node
 
 ### 3.2 速度与超时
 - Action Goal 的 `speed_scale`、`timeout_sec` 在 motion_api 归一化（为空/非正回退默认参数）。
-- planner 使用 `speed_scale` 影响轨迹总时长。
+- planner 使用 `speed_scale` 影响轨迹总时长，计算关系为 `actual_duration_sec = plan_duration_sec / speed_scale`。
+- controller 按规划轨迹 `time_from_start` 等待发布控制点，使速度缩放在执行节奏上生效。
 - controller 以任务级 `timeout_sec` 覆盖默认执行超时。
 
 ### 3.3 执行节拍
-- controller 根据轨迹 `time_from_start` 推导 `point_interval_sec`。
+- controller 根据相邻轨迹点的 `time_from_start` 推导 `point_interval_sec`。
 - robot_interface 优先使用 `point_interval_sec`，否则回退配置参数。
 
 ---
@@ -57,7 +58,8 @@ system_manager_node
 
 - 任一业务节点可上报 `is_error=true` 的 `MotionEvent`。
 - system_manager 收敛为 `TaskState=failed/rejected/canceled` 并发布系统状态。
-- watchdog 检测任务整体超时后强制收敛为 `failed`。
+- controller 根据任务级 `timeout_sec` 检测执行超时并上报 `execution_failed`。
+- manager watchdog 只检测活动任务长时间没有事件更新的停滞情况，避免覆盖慢速任务的合法执行时间。
 
 ---
 

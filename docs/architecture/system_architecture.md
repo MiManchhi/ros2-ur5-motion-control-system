@@ -23,7 +23,7 @@
 
 ### 2.3 控制执行层（controller_pkg）
 - 订阅 `/planned_traj` 启动执行器。
-- 定时器驱动 `TrajectoryExecutor`，按轨迹点分步下发。
+- 定时器驱动 `TrajectoryExecutor`，按规划轨迹 `time_from_start` 等待并分步下发。
 - 发布 `/joint_cmd` 给接口层。
 - 基于 `/joint_states` 做反馈超时、执行超时与目标到位判定。
 
@@ -36,7 +36,7 @@
 - 汇总 `/motion_event`，通过状态机收敛为正式 `/task_state`。
 - 广播系统级 `/system_state`。
 - 提供 `/reset_system` 服务。
-- 通过 watchdog 监控任务整体超时。
+- 通过 watchdog 监控活动任务事件停滞，任务级执行超时由控制层处理。
 
 ---
 

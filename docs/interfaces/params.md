@@ -38,7 +38,7 @@
 
 | 参数名 | 默认值 | 作用 |
 |---|---:|---|
-| `task_timeout_sec` | `20.0` | 任务整体 watchdog 超时 |
+| `task_timeout_sec` | `20.0` | 活动任务事件停滞 watchdog 超时 |
 | `watchdog_rate_hz` | `2.0` | watchdog 检查频率 |
 | `auto_reset_on_failure` | `true` | 超时失败后是否回到 `idle` |
 

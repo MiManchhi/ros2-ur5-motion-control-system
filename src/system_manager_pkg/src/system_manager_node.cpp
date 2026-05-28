@@ -145,23 +145,23 @@ void SystemManagerNode::on_watchdog_timer()
     return;
   }
 
-  const double elapsed = (this->now() - active_task_ctx_.start_time).seconds();
-  if (elapsed <= task_timeout_sec_) {
+  const double idle_elapsed = (this->now() - active_task_ctx_.last_event_time).seconds();
+  if (idle_elapsed <= task_timeout_sec_) {
     return;
   }
 
   RCLCPP_ERROR(
     this->get_logger(),
-    "[task_id=%s] 任务整体超时，elapsed=%.3f sec",
+    "[task_id=%s] 任务事件停滞超时，idle_elapsed=%.3f sec",
     active_task_ctx_.task_id.c_str(),
-    elapsed);
+    idle_elapsed);
 
-  // 任务整体超时，收敛为 failed
+  // manager 不覆盖任务级 timeout_sec，只在长时间无事件更新时做兜底收敛。
   publish_task_state(
     active_task_ctx_.task_id,
     c::task_state::kFailed,
     c::module::kSystemManager,
-    "任务整体超时",
+    "任务事件停滞超时",
     active_task_ctx_.progress,
     active_task_ctx_.current_error,
     true,
@@ -173,13 +173,13 @@ void SystemManagerNode::on_watchdog_timer()
     publish_system_state(
       "",
       c::system_state::kIdle,
-      "系统已从任务超时中恢复空闲",
+      "系统已从任务事件停滞超时中恢复空闲",
       false);
   } else {
     publish_system_state(
       "",
       c::system_state::kError,
-      "任务超时后系统进入 error 状态",
+      "任务事件停滞超时后系统进入 error 状态",
       true);
   }
 }

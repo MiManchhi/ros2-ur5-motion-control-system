@@ -141,6 +141,18 @@ TrajectoryExecutor::StepResult TrajectoryExecutor::step(const rclcpp::Time & now
   if (exec_ctx_.current_point_index < exec_ctx_.trajectory.points.size()) {
     const auto & point = exec_ctx_.trajectory.points[exec_ctx_.current_point_index];
 
+    // 单点 JointTrajectory 命令需要在“上一轨迹点时间”发布下一段运动：
+    // point_interval_sec 表示从上一点运动到当前点的时长。
+    double publish_time_sec = 0.0;
+    if (exec_ctx_.current_point_index > 0U) {
+      const auto & prev_point = exec_ctx_.trajectory.points[exec_ctx_.current_point_index - 1U];
+      publish_time_sec = duration_msg_to_sec(prev_point.time_from_start);
+    }
+
+    if (exec_elapsed < publish_time_sec) {
+      return result;
+    }
+
     // 从轨迹时间中推导当前点的建议执行节拍
     double point_interval_sec = config_.min_publish_interval_sec;
 

@@ -71,5 +71,6 @@
 
 ## 5. Watchdog 与 Reset
 
-- watchdog：按 `task_timeout_sec` 监控任务总耗时，超时后发布 `failed`。
+- watchdog：按 `task_timeout_sec` 监控活动任务事件停滞时间，长时间无事件更新时发布 `failed`。
+- 任务级执行超时由 Action Goal 的 `timeout_sec` 下传到控制层判定。
 - reset 服务：先发布 `resetting`，再清理上下文，最终发布 `idle`。
